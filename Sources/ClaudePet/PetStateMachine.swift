@@ -74,23 +74,67 @@ final class PetStateMachine: ObservableObject {
     private func applyEvent(_ event: HookEvent) {
         switch event.name {
         case "SessionStart":
-            transition(to: .idle, bubble: "嗨", autoReset: 3)
+            let source = (event.data["source"] as? String) ?? "startup"
+            let bubble: String
+            switch source {
+            case "resume":  bubble = "回来啦"
+            case "clear":   bubble = "刷新了"
+            case "compact": bubble = "整理后回来"
+            default:        bubble = "嗨"
+            }
+            transition(to: .idle, bubble: bubble, autoReset: 3)
+
         case "UserPromptSubmit":
-            transition(to: .thinking, bubble: "想想…")
+            // prompt 截前 14 字进气泡（隐私见 README 说明）
+            let raw = (event.data["prompt"] as? String) ?? ""
+            let prompt = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let bubble = prompt.isEmpty ? "想想…" : Self.truncate(prompt, max: 14)
+            transition(to: .thinking, bubble: bubble)
+
         case "PreToolUse":
             let tool = (event.data["tool_name"] as? String) ?? "干活"
-            transition(to: .working, bubble: tool)
+            let input = (event.data["tool_input"] as? [String: Any]) ?? [:]
+            transition(to: .working, bubble: Self.bubbleForTool(tool, input: input))
+
         case "PostToolUse":
             transition(to: .working, bubble: "")
+
+        case "PostToolUseFailure":
+            // 工具失败 → 流泪 row 5
+            let tool = (event.data["tool_name"] as? String) ?? "工具"
+            transition(to: .failed, bubble: "✗ \(tool) 失败", autoReset: 6)
+
+        case "PermissionRequest":
+            // 比 Notification 更具体 —— 含工具名 + 命令/文件
+            let tool = (event.data["tool_name"] as? String) ?? "工具"
+            let input = (event.data["tool_input"] as? [String: Any]) ?? [:]
+            let detail = Self.detailForPermission(tool: tool, input: input)
+            let bubble = detail.isEmpty ? "🛂 \(tool) 等授权" : "🛂 \(detail)"
+            transition(to: .notification, bubble: bubble, autoReset: nil)
+
         case "Notification":
-            let msg = (event.data["message"] as? String) ?? "在吗？"
-            transition(to: .notification, bubble: msg, autoReset: 8)
+            // 持续显示，直到用户单击 ack（详见 PetView.handleSingleClick）
+            transition(to: .notification,
+                       bubble: "主人我都干完了，你快来看",
+                       autoReset: nil)
+
         case "Stop":
             transition(to: .done, bubble: "搞定！", autoReset: 6)
+
+        case "SubagentStart":
+            let agent = (event.data["agent_type"] as? String) ?? "子代理"
+            transition(to: .working, bubble: "🤖 \(agent)")
+
         case "SubagentStop":
-            transition(to: .done, bubble: "+1", autoReset: 3)
+            let agent = (event.data["agent_type"] as? String) ?? ""
+            let bubble = agent.isEmpty ? "+1" : "\(agent) 回来了"
+            transition(to: .done, bubble: bubble, autoReset: 3)
+
         case "PreCompact":
-            transition(to: .working, bubble: "整理…", autoReset: 4)
+            let trigger = (event.data["compaction_trigger"] as? String) ?? "manual"
+            let bubble = trigger == "auto" ? "自动整理…" : "整理…"
+            transition(to: .working, bubble: bubble, autoReset: 4)
+
         case "__Run__":
             // 调试钩子：用 curl 触发跑步
             let dur = (event.data["duration"] as? Double) ?? 6
@@ -110,6 +154,87 @@ final class PetStateMachine: ObservableObject {
         default:
             break
         }
+    }
+
+    /// 用户在桌宠上单击 → 确认收到通知，从 .notification 回 idle。
+    /// 仅当当前是 .notification 时生效（其他状态调用是 no-op）。
+    func acknowledgeNotification() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.state == .notification else { return }
+            self.resetWork?.cancel()
+            self.state = .idle
+            self.bubble = ""
+            self.scheduleSleep()
+        }
+    }
+
+    // MARK: - 工具气泡帮手
+
+    /// 把任意字符串安全截断到 max 字（按 Character，中文也按字数算）
+    private static func truncate(_ s: String, max: Int) -> String {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.count <= max { return t }
+        return String(t.prefix(max)) + "…"
+    }
+
+    /// PreToolUse 气泡：按工具类型从 tool_input 抽适合显示的字段。
+    private static func bubbleForTool(_ tool: String, input: [String: Any]) -> String {
+        switch tool {
+        case "Bash":
+            if let cmd = input["command"] as? String {
+                return "$ " + truncate(cmd, max: 18)
+            }
+            return "Bash"
+        case "Edit", "Write":
+            if let path = input["file_path"] as? String {
+                let name = (path as NSString).lastPathComponent
+                return "✎ " + truncate(name, max: 18)
+            }
+            return tool
+        case "Read":
+            if let path = input["file_path"] as? String {
+                let name = (path as NSString).lastPathComponent
+                return "📖 " + truncate(name, max: 18)
+            }
+            return "Read"
+        case "Grep":
+            if let p = input["pattern"] as? String {
+                return "🔍 " + truncate(p, max: 18)
+            }
+            return "Grep"
+        case "Glob":
+            if let p = input["pattern"] as? String {
+                return "📁 " + truncate(p, max: 18)
+            }
+            return "Glob"
+        case "WebFetch":
+            if let url = input["url"] as? String {
+                let host = URL(string: url)?.host ?? truncate(url, max: 18)
+                return "🌐 " + host
+            }
+            return "WebFetch"
+        case "Agent":
+            if let st = input["subagent_type"] as? String {
+                return "🤖 " + st
+            }
+            return "Agent"
+        case "AskUserQuestion":
+            return "🙋 等回答"
+        default:
+            return tool
+        }
+    }
+
+    /// PermissionRequest 气泡：含工具 + 关键参数。
+    private static func detailForPermission(tool: String, input: [String: Any]) -> String {
+        if tool == "Bash", let cmd = input["command"] as? String {
+            return tool + ": " + truncate(cmd, max: 14)
+        }
+        if let path = input["file_path"] as? String {
+            let name = (path as NSString).lastPathComponent
+            return tool + " " + truncate(name, max: 14)
+        }
+        return ""
     }
 
     /// 播一次性动画，时长 = 该动画 totalDuration（最少 0.5s）。

@@ -9,6 +9,11 @@ final class PetWindow: NSPanel {
     private let followController = FollowController()
     private var saveOriginTimer: Timer?
 
+    /// 上一次 didMove 时的 origin.x —— 用来算拖拽方向。
+    private var lastMoveOriginX: CGFloat?
+    /// 程序化重置位置（如 moveToBottomRight）期间屏蔽方向 sprite。
+    private var suppressDragSprite: Bool = false
+
     /// scale=1.0 时的窗口尺寸
     private static let baseSize = NSSize(width: 180, height: 200)
     private static let originKey = "ClaudePet.window.origin"
@@ -123,14 +128,18 @@ final class PetWindow: NSPanel {
         guard let screen = NSScreen.main else { return }
         let v = screen.visibleFrame
         let target = NSPoint(x: v.maxX - frame.width - 24, y: v.minY + 24)
+        suppressDragSprite = true
         if animated {
-            NSAnimationContext.runAnimationGroup { ctx in
+            NSAnimationContext.runAnimationGroup({ ctx in
                 ctx.duration = 0.6
                 ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                 self.animator().setFrameOrigin(target)
-            }
+            }, completionHandler: { [weak self] in
+                self?.suppressDragSprite = false
+            })
         } else {
             setFrameOrigin(target)
+            suppressDragSprite = false
         }
     }
 
@@ -156,6 +165,19 @@ final class PetWindow: NSPanel {
         saveOriginTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
             self?.persistOrigin()
         }
+
+        // 拖拽方向 → running-left / running-right oneshot
+        // playOneshot 同 row 只续期不重置 sprite —— 持续拖动时动画顺畅，
+        // 松手后 1.06s oneshot 过期自然回 idle / 当前 state。
+        let x = frame.origin.x
+        if !suppressDragSprite, let last = lastMoveOriginX {
+            let dx = x - last
+            if abs(dx) >= 1 {
+                let row: CodexRow = dx > 0 ? .runningRight : .runningLeft
+                stateMachine?.playOneshot(SpriteAnimation(row))
+            }
+        }
+        lastMoveOriginX = x
     }
 
     private func persistOrigin() {

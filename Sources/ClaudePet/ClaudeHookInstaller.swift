@@ -11,8 +11,11 @@ enum ClaudeHookInstaller {
         "UserPromptSubmit",
         "PreToolUse",
         "PostToolUse",
+        "PostToolUseFailure",
+        "PermissionRequest",
         "Notification",
         "Stop",
+        "SubagentStart",
         "SubagentStop",
         "PreCompact"
     ]

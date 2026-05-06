@@ -59,10 +59,15 @@ struct PetView: View {
         }
     }
 
-    /// 单击：
-    /// - afterTaskOnce 模式正在追随 → 中断并跑回默认位置（用户的"我看够了"信号）
-    /// - 其他情况 → 随机播放 waving / jumping / review 一个 oneshot
+    /// 单击优先级：
+    /// 1. 若处于持续 .notification（Notification / PermissionRequest 触发）→ ack
+    /// 2. 若 afterTaskOnce 模式正在追随 → 中断并跑回默认位置
+    /// 3. 否则 → 随机播放 waving / jumping / review 一个 oneshot
     private func handleSingleClick() {
+        if stateMachine.state == .notification {
+            stateMachine.acknowledgeNotification()
+            return
+        }
         if settings.isFollowing && settings.followMode == .afterTaskOnce {
             settings.onCancelFollowRequest?()
             return
