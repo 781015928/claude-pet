@@ -7,11 +7,20 @@ final class PetWindow: NSPanel {
     private var cancellables = Set<AnyCancellable>()
     private weak var stateMachine: PetStateMachine?
     private let followController = FollowController()
+    private var saveOriginTimer: Timer?
+
+    /// scale=1.0 时的窗口尺寸
+    private static let baseSize = NSSize(width: 180, height: 200)
+    private static let originKey = "ClaudePet.window.origin"
 
     init(stateMachine: PetStateMachine, mouseTracker: MouseTracker, settings: PetSettings) {
         self.stateMachine = stateMachine
+        let initialSize = NSSize(
+            width: Self.baseSize.width * CGFloat(settings.scale),
+            height: Self.baseSize.height * CGFloat(settings.scale)
+        )
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 180, height: 200),
+            contentRect: NSRect(origin: .zero, size: initialSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -82,13 +91,29 @@ final class PetWindow: NSPanel {
                 case .always:
                     self.followController.start(mode: .always)
                 case .afterTaskOnce:
-                    // 等待 .done 触发；当前若在追随中先停下
                     self.followController.stop()
                 case .off:
                     self.followController.cancelAndReturn()
                 }
             }
             .store(in: &cancellables)
+
+        // scale 变化 → 调整窗口尺寸（保持中心点不变）
+        settings.$scale
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] s in self?.applyScale(s) }
+            .store(in: &cancellables)
+
+        // 还原上次窗口位置（如果上次保存的位置还在某个屏幕里）
+        let didRestore = restoreSavedOrigin(size: initialSize)
+        if !didRestore { moveToBottomRight() }
+
+        // 监听窗口移动 → debounced 持久化
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleWindowDidMove(_:)),
+            name: NSWindow.didMoveNotification, object: self
+        )
     }
 
     override var canBecomeKey: Bool { false }
@@ -107,6 +132,51 @@ final class PetWindow: NSPanel {
         } else {
             setFrameOrigin(target)
         }
+    }
+
+    /// 把保存的 origin 套回来，前提是该位置仍在某个可见屏幕里。
+    @discardableResult
+    private func restoreSavedOrigin(size: NSSize) -> Bool {
+        guard
+            let dict = UserDefaults.standard.dictionary(forKey: Self.originKey),
+            let x = dict["x"] as? Double,
+            let y = dict["y"] as? Double
+        else { return false }
+        let p = NSPoint(x: x, y: y)
+        let rect = NSRect(origin: p, size: size)
+        let onScreen = NSScreen.screens.contains { $0.visibleFrame.intersects(rect) }
+        guard onScreen else { return false }
+        setFrameOrigin(p)
+        return true
+    }
+
+    @objc private func handleWindowDidMove(_ note: Notification) {
+        // debounce 0.5s —— follow 高频 setFrameOrigin 期间不会落盘，停下后才存
+        saveOriginTimer?.invalidate()
+        saveOriginTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
+            self?.persistOrigin()
+        }
+    }
+
+    private func persistOrigin() {
+        UserDefaults.standard.set([
+            "x": Double(frame.origin.x),
+            "y": Double(frame.origin.y)
+        ], forKey: Self.originKey)
+    }
+
+    /// 缩放：保持中心不变，改 frame.size。
+    private func applyScale(_ scale: Double) {
+        let new = NSSize(
+            width: Self.baseSize.width * CGFloat(scale),
+            height: Self.baseSize.height * CGFloat(scale)
+        )
+        let mid = NSPoint(x: frame.midX, y: frame.midY)
+        let target = NSRect(
+            origin: NSPoint(x: mid.x - new.width / 2, y: mid.y - new.height / 2),
+            size: new
+        )
+        setFrame(target, display: true)
     }
 
     /// 跑一段路：朝左跑到屏幕左边附近，再跑回原位。

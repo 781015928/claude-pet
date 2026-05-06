@@ -134,7 +134,9 @@ enum ClaudeHookInstaller {
         try pretty.write(to: url, options: [.atomic])
     }
 
-    /// 写转发脚本到 Application Support，并赋 +x。
+    /// 写转发脚本到 ~/.claude-pet/，并赋 +x。
+    /// 行为：先尝试 POST 到 127.0.0.1:54321；失败且 ~/.claude-pet/.autostart 存在时
+    /// 用 `open -ga ClaudePet` 拉起 app，retry 5 次（每次间隔 0.4s）。
     private static func writeHookScript() throws {
         let url = hookScriptURL
         let dir = url.deletingLastPathComponent()
@@ -142,7 +144,7 @@ enum ClaudeHookInstaller {
 
         let body = """
         #!/usr/bin/env bash
-        # ClaudePet hook forwarder —— 由桌宠 app 自动生成。
+        # ClaudePet hook forwarder —— 由桌宠 app 自动生成。永不阻塞 Claude。
         set +e
         EVENT="${1:-Unknown}"
         PAYLOAD="$(cat)"
@@ -151,11 +153,26 @@ enum ClaudeHookInstaller {
           PAYLOAD="{}"
         fi
         BODY=$(printf '{"event":"%s","data":%s}' "$EVENT" "$PAYLOAD")
-        curl -fsS -X POST "http://127.0.0.1:54321/event" \\
-          -H "Content-Type: application/json" \\
-          -d "$BODY" \\
-          --max-time 0.3 \\
-          >/dev/null 2>&1
+
+        post() {
+          curl -fsS -X POST "http://127.0.0.1:54321/event" \\
+            -H "Content-Type: application/json" \\
+            -d "$BODY" \\
+            --max-time 0.3 \\
+            >/dev/null 2>&1
+        }
+
+        # 1) app 在跑 → 直接发
+        if post; then exit 0; fi
+
+        # 2) app 没跑 + autostart 启用 → 拉起来再发
+        if [ -f "$HOME/.claude-pet/.autostart" ]; then
+          open -ga ClaudePet >/dev/null 2>&1
+          for _ in 1 2 3 4 5; do
+            sleep 0.4
+            if post; then exit 0; fi
+          done
+        fi
         exit 0
         """
         try body.write(to: url, atomically: true, encoding: .utf8)

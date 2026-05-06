@@ -9,8 +9,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let stateMachine = PetStateMachine()
     private let catalog = SkinCatalog()
     private lazy var settings: PetSettings = {
-        // 默认尝试 .rio，找不到就用 catalog 第一个；catalog 空则 placeholder
-        let initial = catalog.skins.first(where: { $0.id == "rio" })
+        // 优先 1) 上次保存的 skin id 2) rio 3) catalog 第一个 4) placeholder
+        let initial = catalog.skins.first(where: { $0.id == PetSettings.lastSkinID })
+            ?? catalog.skins.first(where: { $0.id == "rio" })
             ?? catalog.skins.first
             ?? .placeholder
         let s = PetSettings(skin: initial)
@@ -23,6 +24,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var connectMenuItem: NSMenuItem!
     private var assetManagerWindow: AssetManagerWindow?
     private var cancellables = Set<AnyCancellable>()
+    private var autoStartMenuItem: NSMenuItem!
+    private var scaleSliderLabel: NSTextField!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         _ = settings  // 触发 lazy 初始化（含 catalog.attach）
@@ -96,6 +99,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         connectMenuItem.state = settings.connectedToClaude ? .on : .off
         connectMenuItem.toolTip = "把桌宠 hook 注入 ~/.claude/settings.json，再次点击撤销"
         menu.addItem(connectMenuItem)
+
+        // hook 触发时自动启动桌宠（toggle）
+        autoStartMenuItem = NSMenuItem(title: "Hook 触发时自动启动",
+                                       action: #selector(toggleAutoStart),
+                                       keyEquivalent: "")
+        autoStartMenuItem.target = self
+        autoStartMenuItem.state = settings.hookAutoStart ? .on : .off
+        autoStartMenuItem.toolTip = "桌宠未运行时，Claude hook 触发会自动把 app 拉起来"
+        menu.addItem(autoStartMenuItem)
+
+        menu.addItem(.separator())
+
+        // 缩放滑块（NSSlider 嵌入 NSMenuItem.view）
+        menu.addItem(makeScaleSliderItem())
 
         menu.addItem(.separator())
         menu.addItem(withTitle: "跑一下！", action: #selector(runPet), keyEquivalent: "g").target = self
@@ -188,6 +205,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         connectMenuItem.state = settings.connectedToClaude ? .on : .off
+    }
+
+    @objc private func toggleAutoStart() {
+        settings.hookAutoStart.toggle()
+        autoStartMenuItem.state = settings.hookAutoStart ? .on : .off
+    }
+
+    private func makeScaleSliderItem() -> NSMenuItem {
+        let item = NSMenuItem()
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 220, height: 44))
+
+        let label = NSTextField(labelWithString: scaleLabelText())
+        label.frame = NSRect(x: 14, y: 22, width: 192, height: 16)
+        label.font = NSFont.menuFont(ofSize: 12)
+        label.textColor = .secondaryLabelColor
+        view.addSubview(label)
+        scaleSliderLabel = label
+
+        let slider = NSSlider(value: settings.scale,
+                              minValue: 0.5,
+                              maxValue: 2.0,
+                              target: self,
+                              action: #selector(scaleSliderChanged(_:)))
+        slider.frame = NSRect(x: 14, y: 4, width: 192, height: 20)
+        slider.numberOfTickMarks = 7
+        slider.allowsTickMarkValuesOnly = false
+        slider.isContinuous = true
+        view.addSubview(slider)
+
+        item.view = view
+        return item
+    }
+
+    @objc private func scaleSliderChanged(_ sender: NSSlider) {
+        // 量化到 0.05，避免浮点抖动
+        let v = (sender.doubleValue * 20).rounded() / 20
+        settings.scale = v
+        scaleSliderLabel.stringValue = scaleLabelText()
+    }
+
+    private func scaleLabelText() -> String {
+        "缩放：\(Int((settings.scale * 100).rounded()))%"
     }
 
     private func showInfo(title: String, text: String) {

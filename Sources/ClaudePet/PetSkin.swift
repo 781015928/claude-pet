@@ -108,26 +108,89 @@ struct SpriteAnimation: Equatable {
     var totalDuration: TimeInterval { frameDurations.reduce(0, +) }
 }
 
-/// 桌宠运行时设置。
+/// 桌宠运行时设置。所有 @Published 字段都持久化到 UserDefaults。
 final class PetSettings: ObservableObject {
-    @Published var skin: PetSkin
-    @Published var followMode: FollowMode = .off
+    @Published var skin: PetSkin {
+        didSet {
+            if oldValue.id != skin.id {
+                UserDefaults.standard.set(skin.id, forKey: Self.skinKey)
+            }
+        }
+    }
+    @Published var followMode: FollowMode {
+        didSet {
+            if oldValue != followMode {
+                UserDefaults.standard.set(followMode.rawValue, forKey: Self.followKey)
+            }
+        }
+    }
+    /// 桌宠整体缩放，1.0 = 原大小；范围 0.5–2.0
+    @Published var scale: Double {
+        didSet {
+            UserDefaults.standard.set(scale, forKey: Self.scaleKey)
+        }
+    }
     @Published var isFollowing: Bool = false
     @Published var connectedToClaude: Bool {
         didSet {
             UserDefaults.standard.set(connectedToClaude, forKey: Self.connectedKey)
         }
     }
+    /// 是否允许 hook 触发时把桌宠 app 拉起来。
+    @Published var hookAutoStart: Bool {
+        didSet {
+            UserDefaults.standard.set(hookAutoStart, forKey: Self.autoStartKey)
+            Self.writeAutoStartMarker(enabled: hookAutoStart)
+        }
+    }
     var onCancelFollowRequest: (() -> Void)?
 
+    private static let skinKey      = "ClaudePet.skin.id"
+    private static let followKey    = "ClaudePet.followMode"
+    private static let scaleKey     = "ClaudePet.scale"
     private static let connectedKey = "ClaudePet.connectedToClaude"
+    private static let autoStartKey = "ClaudePet.hookAutoStart"
+
+    /// 上次保存的 skin id —— AppDelegate 启动时用来挑选初始 skin。
+    static var lastSkinID: String? {
+        UserDefaults.standard.string(forKey: skinKey)
+    }
+
     private var sheetCache: [String: SpriteSheet] = [:]
 
     init(skin: PetSkin = .placeholder) {
         self.skin = skin
+
+        let savedFollow = UserDefaults.standard.string(forKey: Self.followKey)
+            .flatMap(FollowMode.init(rawValue:))
+        self.followMode = savedFollow ?? .off
+
+        let savedScale = UserDefaults.standard.double(forKey: Self.scaleKey)
+        self.scale = (savedScale >= 0.5 && savedScale <= 2.0) ? savedScale : 1.0
+
         let actuallyInstalled = ClaudeHookInstaller.isInstalled()
         let lastKnown = UserDefaults.standard.bool(forKey: Self.connectedKey)
         self.connectedToClaude = actuallyInstalled || lastKnown
+
+        let autoStart = UserDefaults.standard.bool(forKey: Self.autoStartKey)
+        self.hookAutoStart = autoStart
+        // marker 文件保持与 UserDefaults 一致
+        Self.writeAutoStartMarker(enabled: autoStart)
+    }
+
+    /// hook 脚本通过 ~/.claude-pet/.autostart 文件判断是否在 app 未运行时启动 app。
+    static func writeAutoStartMarker(enabled: Bool) {
+        let marker = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude-pet")
+            .appendingPathComponent(".autostart")
+        let fm = FileManager.default
+        try? fm.createDirectory(at: marker.deletingLastPathComponent(),
+                                withIntermediateDirectories: true)
+        if enabled {
+            fm.createFile(atPath: marker.path, contents: nil)
+        } else if fm.fileExists(atPath: marker.path) {
+            try? fm.removeItem(at: marker)
+        }
     }
 
     func sheet(for skin: PetSkin) -> SpriteSheet? {

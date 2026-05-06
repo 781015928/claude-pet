@@ -24,6 +24,11 @@ struct PetView: View {
             bodyRenderer
         }
         .frame(width: 180, height: 200)
+        .scaleEffect(settings.scale, anchor: .center)
+        .frame(
+            width: 180 * settings.scale,
+            height: 200 * settings.scale
+        )
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { handleDoubleClick() }
         .onTapGesture(count: 1) { handleSingleClick() }
