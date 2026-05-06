@@ -39,6 +39,13 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$BIN" "$MACOS_DIR/$APP_NAME"
 chmod +x "$MACOS_DIR/$APP_NAME"
 
+# 生成 / 复用 AppIcon.icns
+if [[ ! -f build/AppIcon.icns ]]; then
+  echo "→ 生成 AppIcon.icns"
+  ./scripts/build-icon.sh
+fi
+cp build/AppIcon.icns "$RESOURCES_DIR/AppIcon.icns"
+
 echo "→ 写 Info.plist"
 cat > "$CONTENTS_DIR/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -51,6 +58,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<EOF
     <key>CFBundleVersion</key><string>$VERSION</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleExecutable</key><string>$APP_NAME</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>CFBundleIconName</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleSupportedPlatforms</key>
     <array><string>MacOSX</string></array>
