@@ -61,15 +61,10 @@ final class FollowController {
 
         if dist < arriveDistance {
             // 从远到近 → 触发 jumping 一次
+            // afterTaskOnce / always 都不在到达后自动停 —— 持续追到用户单击为止
             if !wasNear {
                 stateMachine?.playOneshot(SpriteAnimation(.jumping))
                 wasNear = true
-                if mode == .afterTaskOnce {
-                    let life = SpriteAnimation(.jumping).totalDuration
-                    DispatchQueue.main.asyncAfter(deadline: .now() + life) { [weak self] in
-                        self?.stop()
-                    }
-                }
             }
             return
         }

@@ -59,15 +59,22 @@ struct PetView: View {
         }
     }
 
-    /// 单击：在 waving / jumping / review 三者之间随机切换。
+    /// 单击：
+    /// - afterTaskOnce 模式正在追随 → 中断并跑回默认位置（用户的"我看够了"信号）
+    /// - 其他情况 → 随机播放 waving / jumping / review 一个 oneshot
     private func handleSingleClick() {
+        if settings.isFollowing && settings.followMode == .afterTaskOnce {
+            settings.onCancelFollowRequest?()
+            return
+        }
         let pool: [CodexRow] = [.waving, .jumping, .review]
         if let pick = pool.randomElement() {
             stateMachine.playOneshot(SpriteAnimation(pick))
         }
     }
 
-    /// 双击：唤起 Claude Desktop（追随中且 afterTaskOnce 模式时同步取消追随并跑回默认位置）。
+    /// 双击：唤起 Claude Desktop。
+    /// 若 afterTaskOnce 模式正在追随，同步中断并跑回默认位置。
     private func handleDoubleClick() {
         if settings.isFollowing && settings.followMode == .afterTaskOnce {
             settings.onCancelFollowRequest?()
