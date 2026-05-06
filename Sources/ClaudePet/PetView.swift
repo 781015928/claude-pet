@@ -10,15 +10,25 @@ struct PetView: View {
     /// 仅供 ZZZBubbles 等装饰动画使用（sprite 自带时钟，不依赖此 phase）
     @State private var phase: Double = 0
 
+    /// 实际显示的气泡 —— afterTaskOnce 追随期间强制展示"主人我都干完了"文案，
+    /// 不被 stateMachine 内部的 autoReset / 后续状态切换覆盖；单击 ack 后回退到
+    /// stateMachine.bubble。
+    private var displayBubble: String {
+        if settings.isFollowing && settings.followMode == .afterTaskOnce {
+            return "主人我都干完了，你快来看"
+        }
+        return stateMachine.bubble
+    }
+
     var body: some View {
         ZStack {
             Color.clear.contentShape(Rectangle())
 
-            if !stateMachine.bubble.isEmpty {
-                BubbleView(text: stateMachine.bubble)
+            if !displayBubble.isEmpty {
+                BubbleView(text: displayBubble)
                     .offset(y: -86)
                     .transition(.opacity.combined(with: .move(edge: .top)))
-                    .animation(.easeInOut(duration: 0.2), value: stateMachine.bubble)
+                    .animation(.easeInOut(duration: 0.2), value: displayBubble)
             }
 
             bodyRenderer
