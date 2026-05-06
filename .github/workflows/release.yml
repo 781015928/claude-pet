@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '手动 release 用的 tag 名（如 v0.0.1）'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: build & publish .app
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        run: |
+          REF="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${REF#v}"
+          echo "tag=$REF" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Tag = $REF, version = $VERSION"
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          swift --version
+
+      - name: Package .app (with version $VERSION baked into Info.plist)
+        env:
+          CLAUDE_PET_VERSION: ${{ steps.ver.outputs.version }}
+        run: ./scripts/build-app.sh
+
+      - name: Inspect bundle
+        run: |
+          plutil -p build/dist/ClaudePet.app/Contents/Info.plist
+          du -sh build/dist/ClaudePet.app
+
+      - name: Zip with ditto (preserves metadata + ad-hoc signature)
+        run: |
+          cd build/dist
+          ZIP="ClaudePet-${{ steps.ver.outputs.tag }}.zip"
+          ditto -c -k --sequesterRsrc --keepParent ClaudePet.app "$ZIP"
+          shasum -a 256 "$ZIP" > "$ZIP.sha256"
+          ls -la
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          files: |
+            build/dist/ClaudePet-${{ steps.ver.outputs.tag }}.zip
+            build/dist/ClaudePet-${{ steps.ver.outputs.tag }}.zip.sha256
