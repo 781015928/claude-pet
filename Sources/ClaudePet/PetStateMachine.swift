@@ -181,8 +181,10 @@ final class PetStateMachine: ObservableObject {
     private static func bubbleForTool(_ tool: String, input: [String: Any]) -> String {
         switch tool {
         case "Bash":
-            if let cmd = input["command"] as? String {
-                return "$ " + truncate(cmd, max: 18)
+            // 显示 LLM 给的 description（人类可读、避免暴露具体命令参数）
+            if let desc = (input["description"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !desc.isEmpty {
+                return "$ " + truncate(desc, max: 18)
             }
             return "Bash"
         case "Edit", "Write":
