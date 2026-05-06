@@ -89,6 +89,7 @@ final class FollowController {
     }
 
     /// 用 setFrameOrigin 分步走回默认位置 —— 同 tick 路径，避免 NSAnimationContext 路径不可靠。
+    /// 每帧重新 playOneshot 续期 sprite，跑得多远都保持 running-left/right。
     private func runBackToDefault() {
         guard let window = window, let screen = NSScreen.main else { return }
         let v = screen.visibleFrame
@@ -96,11 +97,9 @@ final class FollowController {
 
         let dx = target.x - window.frame.origin.x
         let row: CodexRow = dx > 0 ? .runningRight : .runningLeft
-        stateMachine?.playOneshot(SpriteAnimation(row))
 
-        // ~190pt/秒 的归途速度
-        let speed: CGFloat = 190
-        let stepInterval: TimeInterval = 0.018  // ~55Hz, 每步 3.4pt
+        let speed: CGFloat = 190                   // ~190pt/秒
+        let stepInterval: TimeInterval = 0.018     // ~55Hz, 每步 3.4pt
         let perStep = speed * CGFloat(stepInterval)
 
         let returnTimer = Timer(timeInterval: stepInterval, repeats: true) { [weak self, weak window] t in
@@ -117,7 +116,8 @@ final class FollowController {
             let nx = origin.x + (rdx / rdist) * perStep
             let ny = origin.y + (rdy / rdist) * perStep
             window.setFrameOrigin(NSPoint(x: nx, y: ny))
-            _ = self // keep alive
+            // 每帧续期 oneshot —— 同 row 不重置 sprite 内部时钟（跟 tick() 同样手法）
+            self?.stateMachine?.playOneshot(SpriteAnimation(row))
         }
         RunLoop.main.add(returnTimer, forMode: .common)
     }
