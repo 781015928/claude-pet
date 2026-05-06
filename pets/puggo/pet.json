@@ -1,0 +1,6 @@
+{
+  "id": "puggo",
+  "displayName": "Puggo",
+  "description": "Local custom puggo pet (8×9 Codex spritesheet, 1536×1872, 192×208/frame).",
+  "spritesheetPath": "spritesheet.webp"
+}

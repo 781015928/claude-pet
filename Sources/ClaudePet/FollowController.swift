@@ -1,0 +1,129 @@
+import AppKit
+import Foundation
+
+/// 鼠标追随控制器：每 0.4s tick 一次，朝鼠标方向移动窗口，靠近阈值时播 jumping。
+final class FollowController {
+    weak var window: PetWindow?
+    weak var stateMachine: PetStateMachine?
+    weak var settings: PetSettings?
+
+    private(set) var mode: FollowMode = .off
+    private var timer: Timer?
+    private var wasNear: Bool = false
+
+    private let tickInterval: TimeInterval = 1.0 / 60.0  // 60Hz tick
+    private let arriveDistance: CGFloat = 80              // 距离 < 此值算"追到"
+    private let stepCap: CGFloat = 4                      // 每 tick 走 4pt → ~240pt/秒
+
+    /// 启动追随。
+    func start(mode: FollowMode) {
+        guard mode != .off else { stop(); return }
+        // 已经在跑同模式 → 不重启（避免 .done sink 重复触发）
+        if self.mode == mode, timer != nil { return }
+        self.mode = mode
+        wasNear = false
+        timer?.invalidate()
+        settings?.isFollowing = true
+        let t = Timer.scheduledTimer(withTimeInterval: tickInterval, repeats: true) { [weak self] _ in
+            self?.tick()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+        // 立即来一次，体验更跟手
+        tick()
+    }
+
+    /// 停止追随（不带返回动作）。
+    func stop() {
+        mode = .off
+        timer?.invalidate()
+        timer = nil
+        wasNear = false
+        settings?.isFollowing = false
+    }
+
+    /// 中断追随并跑回默认位置（屏幕右下角）。
+    func cancelAndReturn() {
+        guard mode != .off else { return }
+        stop()
+        runBackToDefault()
+    }
+
+    // MARK: - Internal
+
+    private func tick() {
+        guard let window = window else { stop(); return }
+        let mouse = NSEvent.mouseLocation
+        let petCenter = NSPoint(x: window.frame.midX, y: window.frame.midY)
+        let dx = mouse.x - petCenter.x
+        let dy = mouse.y - petCenter.y
+        let dist = sqrt(dx * dx + dy * dy)
+
+        if dist < arriveDistance {
+            // 从远到近 → 触发 jumping 一次
+            if !wasNear {
+                stateMachine?.playOneshot(SpriteAnimation(.jumping))
+                wasNear = true
+                if mode == .afterTaskOnce {
+                    let life = SpriteAnimation(.jumping).totalDuration
+                    DispatchQueue.main.asyncAfter(deadline: .now() + life) { [weak self] in
+                        self?.stop()
+                    }
+                }
+            }
+            return
+        }
+        wasNear = false
+
+        // 每 tick 持续续期 oneshot —— playOneshot 对同 row 只刷生命周期不重置 sprite，
+        // 既避免 oneshot 1 秒后过期回到 idle/done，也不会让 sprite 闪
+        let isRight = dx > 0
+        let row: CodexRow = isRight ? .runningRight : .runningLeft
+        stateMachine?.playOneshot(SpriteAnimation(row))
+
+        let stepDist = min(dist - arriveDistance, stepCap)
+        guard stepDist > 0 else { return }
+        let stepX = (dx / dist) * stepDist
+        let stepY = (dy / dist) * stepDist
+
+        let target = NSPoint(
+            x: window.frame.origin.x + stepX,
+            y: window.frame.origin.y + stepY
+        )
+        window.setFrameOrigin(target)
+    }
+
+    /// 用 setFrameOrigin 分步走回默认位置 —— 同 tick 路径，避免 NSAnimationContext 路径不可靠。
+    private func runBackToDefault() {
+        guard let window = window, let screen = NSScreen.main else { return }
+        let v = screen.visibleFrame
+        let target = NSPoint(x: v.maxX - window.frame.width - 24, y: v.minY + 24)
+
+        let dx = target.x - window.frame.origin.x
+        let row: CodexRow = dx > 0 ? .runningRight : .runningLeft
+        stateMachine?.playOneshot(SpriteAnimation(row))
+
+        // ~190pt/秒 的归途速度
+        let speed: CGFloat = 190
+        let stepInterval: TimeInterval = 0.018  // ~55Hz, 每步 3.4pt
+        let perStep = speed * CGFloat(stepInterval)
+
+        let returnTimer = Timer(timeInterval: stepInterval, repeats: true) { [weak self, weak window] t in
+            guard let window = window else { t.invalidate(); return }
+            let origin = window.frame.origin
+            let rdx = target.x - origin.x
+            let rdy = target.y - origin.y
+            let rdist = sqrt(rdx * rdx + rdy * rdy)
+            if rdist <= perStep {
+                window.setFrameOrigin(target)
+                t.invalidate()
+                return
+            }
+            let nx = origin.x + (rdx / rdist) * perStep
+            let ny = origin.y + (rdy / rdist) * perStep
+            window.setFrameOrigin(NSPoint(x: nx, y: ny))
+            _ = self // keep alive
+        }
+        RunLoop.main.add(returnTimer, forMode: .common)
+    }
+}

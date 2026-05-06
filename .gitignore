@@ -1,0 +1,22 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Build outputs
+build/
+*.xcodeproj/
+DerivedData/
+
+# macOS
+.DS_Store
+*.swp
+
+# Editors
+.idea/
+.vscode/
+*~
+
+# User-imported pet sprites land in ~/.claude-pet — never in repo.
+# Stray subdirs sometimes appeared during dev; keep them out:
+pets/spritesheet/

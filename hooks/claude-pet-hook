@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# claude-pet-hook —— 把 Claude Code hook 事件转发给桌宠 HTTP server。
+# 设计原则：失败必须静默，绝不阻塞 Claude Code。
+
+set +e
+
+EVENT="${1:-Unknown}"
+PAYLOAD="$(cat)"
+[ -z "$PAYLOAD" ] && PAYLOAD="{}"
+
+# 校验是不是合法 JSON；不是就降级成 {}
+if ! printf '%s' "$PAYLOAD" | python3 -c 'import sys,json; json.load(sys.stdin)' >/dev/null 2>&1; then
+  PAYLOAD="{}"
+fi
+
+BODY=$(printf '{"event":"%s","data":%s}' "$EVENT" "$PAYLOAD")
+
+curl -fsS -X POST "http://127.0.0.1:54321/event" \
+  -H "Content-Type: application/json" \
+  -d "$BODY" \
+  --max-time 0.3 \
+  >/dev/null 2>&1
+
+exit 0
