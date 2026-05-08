@@ -3,40 +3,58 @@ import Foundation
 
 /// 桌宠触发的副作用动作（不属于动画状态）。
 enum PetActions {
-    /// 跳回某个 Claude session：直接用 NSTask 在后台跑
-    /// `claude --resume <id> /desktop`，**不开任何终端窗口**。
+    /// 跳回某个 Claude session：写一个临时 .command 脚本，用 NSWorkspace 让用户的
+    /// 默认终端打开它，自动 cd 到 cwd 后跑 `claude --resume <id> /desktop`。
     ///
-    /// 设计要点：
-    /// - `/desktop` slash command 会把 session 推回 Claude Desktop，claude CLI
-    ///   随后自然退出 → 没有 CLI 残留、没有终端窗口要回收。
-    /// - 用 login + interactive shell（`-l -i`）以加载用户 PATH（claude 经常装
-    ///   在 nvm / homebrew / npm-global，需要 .zshrc / .bash_profile 提供路径）。
-    /// - stdin/stdout/stderr 全部丢 /dev/null，不阻塞、不漏字符到我们这边。
-    /// - 同时把 Claude Desktop 拉到前台，省得用户切前台。
+    /// 为什么不能用后台 NSTask（即使 -l -i shell + 重定向 stdio）：claude CLI
+    /// 启动时检查 isatty(stdin)/isatty(stdout) 决定运行模式，没有 TTY 时会
+    /// hang 或退化到错误的模式，slash command `/desktop` 不会被处理。必须给它
+    /// 一个真实终端。
+    ///
+    /// `/desktop` 把 session 推到 Claude Desktop 后 claude CLI 退出；如果你不想
+    /// 看 Terminal 窗口残留，去 Terminal → 设置 → 描述文件 → Shell → "Shell
+    /// 结束时" 选 "如果 shell 干净退出则关闭"，那以后 resume 后窗口会自动关。
     static func resumeClaudeSession(id: String, cwd: String?) {
-        let task = Process()
-        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-        task.launchPath = shell
-
-        var script = ""
+        let tmpURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("claudepet-resume-\(UUID().uuidString).command")
+        var body = "#!/usr/bin/env bash\nset -e\n"
         if let cwd = cwd, !cwd.isEmpty {
-            script += "cd \(shellQuote(cwd)) && "
+            body += "cd \(shellQuote(cwd))\n"
         }
-        script += "claude --resume \(shellQuote(id)) /desktop"
-
-        task.arguments = ["-l", "-i", "-c", script]
-        task.standardInput = FileHandle.nullDevice
-        task.standardOutput = FileHandle.nullDevice
-        task.standardError = FileHandle.nullDevice
+        body += "claude --resume \(shellQuote(id)) /desktop\n"
 
         do {
-            try task.run()
+            try body.write(to: tmpURL, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: 0o755 as Int16)],
+                ofItemAtPath: tmpURL.path
+            )
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = true
+            NSWorkspace.shared.open(
+                [tmpURL],
+                withApplicationAt: defaultTerminalAppURL(),
+                configuration: config
+            ) { _, error in
+                if let error = error {
+                    NSLog("[ClaudePet] open .command failed: \(error)")
+                }
+            }
         } catch {
             NSLog("[ClaudePet] resume failed: \(error)")
         }
 
         // 顺手把 Claude Desktop 拉到前台 —— /desktop 会把 session 推过去
         launchClaudeDesktop()
+    }
+
+    /// 用户默认终端 —— 默认 Terminal.app；可通过 CLAUDE_PET_TERMINAL 覆盖
+    /// （比如 /Applications/iTerm.app 或 /Applications/Ghostty.app）。
+    private static func defaultTerminalAppURL() -> URL {
+        if let env = ProcessInfo.processInfo.environment["CLAUDE_PET_TERMINAL"], !env.isEmpty {
+            return URL(fileURLWithPath: env)
+        }
+        return URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")
     }
 
     /// 简单 POSIX 单引号转义。
