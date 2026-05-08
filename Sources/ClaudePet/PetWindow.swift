@@ -135,10 +135,24 @@ final class PetWindow: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
-    func moveToBottomRight(animated: Bool = false) {
-        guard let screen = NSScreen.main else { return }
+    /// 默认右下角位置 —— 让 sprite **视觉本体**（baseSize × scale）距屏幕右下角
+    /// 各 24pt。如果窗口因气泡撑得比 sprite 宽，多出来的宽度左右等分摊，使
+    /// sprite 中心始终落在 (maxX - spriteW/2 - 24, minY + 24 + spriteH/2)。
+    /// 这样不论气泡有没有出现 / 多宽，"原地"是同一个视觉位置。
+    func defaultBottomRightOrigin() -> NSPoint? {
+        guard let screen = NSScreen.main else { return nil }
         let v = screen.visibleFrame
-        let target = NSPoint(x: v.maxX - frame.width - 24, y: v.minY + 24)
+        let s = CGFloat(settings?.scale ?? 1.0)
+        let spriteW = Self.baseSize.width * s
+        let extraW = max(0, frame.width - spriteW)
+        return NSPoint(
+            x: v.maxX - spriteW - 24 - extraW / 2,
+            y: v.minY + 24
+        )
+    }
+
+    func moveToBottomRight(animated: Bool = false) {
+        guard let target = defaultBottomRightOrigin() else { return }
         suppressDragSprite = true
         if animated {
             NSAnimationContext.runAnimationGroup({ ctx in

@@ -90,20 +90,26 @@ final class FollowController {
 
     /// 用 setFrameOrigin 分步走回默认位置 —— 同 tick 路径，避免 NSAnimationContext 路径不可靠。
     /// 每帧重新 playOneshot 续期 sprite，跑得多远都保持 running-left/right。
+    ///
+    /// target 每帧都向 PetWindow 重新询问 —— 因为 stop() 触发的
+    /// recomputeFrame 是异步生效的，途中窗口宽度可能从"含大气泡"缩到 baseW，
+    /// 如果只在出发时算一次 target，到达后就会偏离视觉右下角。
     private func runBackToDefault() {
-        guard let window = window, let screen = NSScreen.main else { return }
-        let v = screen.visibleFrame
-        let target = NSPoint(x: v.maxX - window.frame.width - 24, y: v.minY + 24)
+        guard let window = window, let initial = window.defaultBottomRightOrigin() else { return }
 
-        let dx = target.x - window.frame.origin.x
-        let row: CodexRow = dx > 0 ? .runningRight : .runningLeft
+        // 出发方向只在启动时定一次 —— sprite 已经反正会续期，避免中途因为窗口
+        // 缩窄、target.x 跳变而镜像翻转。
+        let dx0 = initial.x - window.frame.origin.x
+        let row: CodexRow = dx0 >= 0 ? .runningRight : .runningLeft
 
         let speed: CGFloat = 190                   // ~190pt/秒
         let stepInterval: TimeInterval = 0.018     // ~55Hz, 每步 3.4pt
         let perStep = speed * CGFloat(stepInterval)
 
         let returnTimer = Timer(timeInterval: stepInterval, repeats: true) { [weak self, weak window] t in
-            guard let window = window else { t.invalidate(); return }
+            guard let window = window, let target = window.defaultBottomRightOrigin() else {
+                t.invalidate(); return
+            }
             let origin = window.frame.origin
             let rdx = target.x - origin.x
             let rdy = target.y - origin.y
