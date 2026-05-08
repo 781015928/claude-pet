@@ -34,9 +34,13 @@ struct PetView: View {
                 .frame(width: 180, height: 200)
                 .scaleEffect(s, anchor: .center)
 
-            // 气泡：独立 fontSize，不随 scale 变；位置随 scale 等比抬升避免压住头
+            // 气泡：独立 fontSize，不随 scale 变；位置随 scale 等比抬升避免压住头。
+            // .fixedSize() 让气泡按自己的自然宽度渲染，不被外层 .frame(180×scale)
+            // 下发的"建议宽度"压缩 —— 否则 scale 较小 + 字号较大时文字会被截断 /
+            // 折行。NSWindow 宽度由 PetWindow.recomputeFrame() 配套扩展。
             if !displayBubble.isEmpty {
                 BubbleView(text: displayBubble, fontSize: CGFloat(settings.bubbleFontSize))
+                    .fixedSize()
                     .offset(y: -86 * s)
                     .transition(.opacity.combined(with: .move(edge: .top)))
                     .animation(.easeInOut(duration: 0.2), value: displayBubble)

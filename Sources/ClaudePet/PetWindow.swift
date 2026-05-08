@@ -105,19 +105,18 @@ final class PetWindow: NSPanel {
             }
             .store(in: &cancellables)
 
-        // 任何会影响窗口尺寸的输入：scale / 气泡内容 / 气泡字号 /
-        // follow 状态（决定是否展示"主人..."文案）/ session 名 → 重算 frame
-        Publishers.CombineLatest4(
-            settings.$scale.removeDuplicates(),
-            settings.$bubbleFontSize.removeDuplicates(),
-            stateMachine.$bubble.removeDuplicates(),
-            stateMachine.$lastCwd.removeDuplicates()
-        )
-        .map { _ in () }
-        .merge(with:
-            settings.$followMode.removeDuplicates().map { _ in () },
-            settings.$isFollowing.removeDuplicates().map { _ in () }
-        )
+        // 任何会影响窗口尺寸的输入：scale / 气泡字号 / 气泡内容 / session 名 /
+        // follow 状态（影响 displayBubble 文案）—— 任一变化都重算 frame。
+        // 用 MergeMany 让 6 个 Void publisher 类型对齐，比 CombineLatest+merge
+        // 更不容易被类型推断坑。
+        Publishers.MergeMany([
+            settings.$scale.map { _ in () }.eraseToAnyPublisher(),
+            settings.$bubbleFontSize.map { _ in () }.eraseToAnyPublisher(),
+            settings.$followMode.map { _ in () }.eraseToAnyPublisher(),
+            settings.$isFollowing.map { _ in () }.eraseToAnyPublisher(),
+            stateMachine.$bubble.map { _ in () }.eraseToAnyPublisher(),
+            stateMachine.$lastCwd.map { _ in () }.eraseToAnyPublisher(),
+        ])
         .receive(on: RunLoop.main)
         .sink { [weak self] in self?.recomputeFrame() }
         .store(in: &cancellables)
@@ -238,14 +237,18 @@ final class PetWindow: NSPanel {
         if text.isEmpty { return 0 }
 
         let f = CGFloat(st.bubbleFontSize)
-        let font = NSFont.systemFont(ofSize: f, weight: .medium)
+        // 与 SwiftUI Text(.font(.system(size:weight:.medium, design:.rounded))) 对齐 ——
+        // rounded 比默认 system 略宽，用错字体宽度估小会导致裁字。
+        let base = NSFont.systemFont(ofSize: f, weight: .medium)
+        let descriptor = base.fontDescriptor.withDesign(.rounded) ?? base.fontDescriptor
+        let font = NSFont(descriptor: descriptor, size: f) ?? base
         let attr = NSAttributedString(string: text, attributes: [.font: font])
         let bbox = attr.boundingRect(
             with: CGSize(width: 10_000, height: 100),
             options: [.usesLineFragmentOrigin, .usesFontLeading]
         )
-        // BubbleView 的 padding.horizontal = fontSize * 0.9（左右各一份），再留 8pt 余量
-        return ceil(bbox.width + f * 1.8 + 8)
+        // BubbleView 的 padding.horizontal = fontSize * 0.9（左右各一份），再多留 12pt 余量
+        return ceil(bbox.width + f * 1.8 + 12)
     }
 
     /// 跑一段路：朝左跑到屏幕左边附近，再跑回原位。
