@@ -13,9 +13,13 @@ struct PetView: View {
     /// 实际显示的气泡 —— afterTaskOnce 追随期间强制展示"主人我都干完了"文案，
     /// 不被 stateMachine 内部的 autoReset / 后续状态切换覆盖；单击 ack 后回退到
     /// stateMachine.bubble。
+    /// 文案里嵌入 session 名（cwd basename），让用户知道是哪个会话来叫他。
     private var displayBubble: String {
         if settings.isFollowing && settings.followMode == .afterTaskOnce {
-            return "主人我都干完了，你快来看"
+            let name = stateMachine.sessionName
+            return name.isEmpty
+                ? "主人我都干完了，你快来看"
+                : "\(name) 干完了，你快来看"
         }
         return stateMachine.bubble
     }
@@ -70,18 +74,32 @@ struct PetView: View {
     }
 
     /// 单击优先级：
-    /// 1. 若处于持续 .notification（Notification / PermissionRequest 触发）→ ack
-    /// 2. 若 afterTaskOnce 模式正在追随 → 中断并跑回默认位置
-    /// 3. 否则 → 随机播放 waving / jumping / review 一个 oneshot
+    /// 1. 任务完成相关场景（.notification / .done / afterTaskOnce 追随中）：
+    ///    ↳ 跳回那个 Claude session（claude --resume <id> /desktop）
+    ///    ↳ 同时 ack 通知 / 取消追随
+    /// 2. 否则 → 随机播放 waving / jumping / review 一个 oneshot
     private func handleSingleClick() {
-        if stateMachine.state == .notification {
-            stateMachine.acknowledgeNotification()
+        let inFollow = settings.isFollowing && settings.followMode == .afterTaskOnce
+        let isPostTask =
+            stateMachine.state == .notification ||
+            stateMachine.state == .done ||
+            inFollow
+
+        if isPostTask {
+            // 跳回 session
+            if let sid = stateMachine.lastSessionID, !sid.isEmpty {
+                PetActions.resumeClaudeSession(id: sid, cwd: stateMachine.lastCwd)
+            }
+            // 清状态（追随优先于 notification —— follow 时 state 通常 == .done 或 .notification 都需要清）
+            if inFollow {
+                settings.onCancelFollowRequest?()
+            }
+            if stateMachine.state == .notification {
+                stateMachine.acknowledgeNotification()
+            }
             return
         }
-        if settings.isFollowing && settings.followMode == .afterTaskOnce {
-            settings.onCancelFollowRequest?()
-            return
-        }
+
         let pool: [CodexRow] = [.waving, .jumping, .review]
         if let pick = pool.randomElement() {
             stateMachine.playOneshot(SpriteAnimation(pick))

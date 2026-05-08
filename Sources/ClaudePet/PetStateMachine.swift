@@ -34,6 +34,19 @@ final class PetStateMachine: ObservableObject {
     /// 不影响 state 本身（hook 仍然可以推进状态机）。
     @Published var oneshot: SpriteAnimation? = nil
 
+    /// 最近一次 hook 事件附带的 session 上下文，用于：
+    /// 1) 在气泡里把 session 名（cwd basename）显示出来
+    /// 2) 单击桌宠时通过 `claude --resume <id>` 跳回那个会话
+    @Published var lastSessionID: String?
+    @Published var lastCwd: String?
+
+    /// session 的可读名 = cwd 的最后一段目录名。
+    var sessionName: String {
+        guard let cwd = lastCwd, !cwd.isEmpty else { return "" }
+        let name = (cwd as NSString).lastPathComponent
+        return name.isEmpty ? cwd : name
+    }
+
     private var resetWork: DispatchWorkItem?
     private var sleepWork: DispatchWorkItem?
     private var oneshotWork: DispatchWorkItem?
@@ -72,6 +85,14 @@ final class PetStateMachine: ObservableObject {
     }
 
     private func applyEvent(_ event: HookEvent) {
+        // 任何 hook 都更新 session 上下文（每个 event 都含 session_id / cwd）
+        if let sid = event.data["session_id"] as? String, !sid.isEmpty {
+            lastSessionID = sid
+        }
+        if let cwd = event.data["cwd"] as? String, !cwd.isEmpty {
+            lastCwd = cwd
+        }
+
         switch event.name {
         case "SessionStart":
             let source = (event.data["source"] as? String) ?? "startup"
