@@ -46,10 +46,11 @@ struct PetView: View {
                     .animation(.easeInOut(duration: 0.2), value: displayBubble)
             }
         }
-        .frame(
-            width: 180 * settings.scale,
-            height: 200 * settings.scale
-        )
+        // 让 PetView 自动填满 NSHostingView（= NSPanel.contentRect）。
+        // PetWindow.recomputeFrame() 会把窗口宽度扩到能容纳气泡，这里如果硬写
+        // .frame(width: 180*scale) 会把 SwiftUI 视图框死在 sprite 大小，气泡
+        // 溢出窗口的部分被 SwiftUI 自己 clip，跟窗口扩宽配合不上。
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { handleDoubleClick() }
         .onTapGesture(count: 1) { handleSingleClick() }
