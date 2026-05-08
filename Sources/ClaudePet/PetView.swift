@@ -25,20 +25,23 @@ struct PetView: View {
     }
 
     var body: some View {
+        let s = CGFloat(settings.scale)
         ZStack {
             Color.clear.contentShape(Rectangle())
 
+            // sprite 主体：随整体 scale 缩放
+            bodyRenderer
+                .frame(width: 180, height: 200)
+                .scaleEffect(s, anchor: .center)
+
+            // 气泡：独立 fontSize，不随 scale 变；位置随 scale 等比抬升避免压住头
             if !displayBubble.isEmpty {
-                BubbleView(text: displayBubble)
-                    .offset(y: -86)
+                BubbleView(text: displayBubble, fontSize: CGFloat(settings.bubbleFontSize))
+                    .offset(y: -86 * s)
                     .transition(.opacity.combined(with: .move(edge: .top)))
                     .animation(.easeInOut(duration: 0.2), value: displayBubble)
             }
-
-            bodyRenderer
         }
-        .frame(width: 180, height: 200)
-        .scaleEffect(settings.scale, anchor: .center)
         .frame(
             width: 180 * settings.scale,
             height: 200 * settings.scale
@@ -207,16 +210,21 @@ private struct StickerBubble: View {
 
 private struct BubbleView: View {
     let text: String
+    let fontSize: CGFloat
+
     var body: some View {
+        // 内边距 / 圆角跟字号成比例 —— 字大时气泡也变大，比例视觉协调
         Text(text)
-            .font(.system(size: 11, weight: .medium, design: .rounded))
+            .font(.system(size: fontSize, weight: .medium, design: .rounded))
             .foregroundColor(.black)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
+            .padding(.horizontal, fontSize * 0.9)
+            .padding(.vertical, fontSize * 0.45)
             .background(
-                RoundedRectangle(cornerRadius: 10)
+                RoundedRectangle(cornerRadius: fontSize * 0.9)
                     .fill(Color.white)
-                    .shadow(color: .black.opacity(0.2), radius: 3, y: 1)
+                    .shadow(color: .black.opacity(0.2),
+                            radius: max(fontSize * 0.27, 1),
+                            y: 1)
             )
             .lineLimit(1)
     }

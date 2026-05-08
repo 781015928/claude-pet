@@ -130,6 +130,12 @@ final class PetSettings: ObservableObject {
             UserDefaults.standard.set(scale, forKey: Self.scaleKey)
         }
     }
+    /// 气泡字体大小（pt），独立于整体 scale；范围 8–24
+    @Published var bubbleFontSize: Double {
+        didSet {
+            UserDefaults.standard.set(bubbleFontSize, forKey: Self.bubbleFontKey)
+        }
+    }
     @Published var isFollowing: Bool = false
     @Published var connectedToClaude: Bool {
         didSet {
@@ -145,11 +151,12 @@ final class PetSettings: ObservableObject {
     }
     var onCancelFollowRequest: (() -> Void)?
 
-    private static let skinKey      = "ClaudePet.skin.id"
-    private static let followKey    = "ClaudePet.followMode"
-    private static let scaleKey     = "ClaudePet.scale"
-    private static let connectedKey = "ClaudePet.connectedToClaude"
-    private static let autoStartKey = "ClaudePet.hookAutoStart"
+    private static let skinKey       = "ClaudePet.skin.id"
+    private static let followKey     = "ClaudePet.followMode"
+    private static let scaleKey      = "ClaudePet.scale"
+    private static let bubbleFontKey = "ClaudePet.bubbleFontSize"
+    private static let connectedKey  = "ClaudePet.connectedToClaude"
+    private static let autoStartKey  = "ClaudePet.hookAutoStart"
 
     /// 上次保存的 skin id —— AppDelegate 启动时用来挑选初始 skin。
     static var lastSkinID: String? {
@@ -167,6 +174,9 @@ final class PetSettings: ObservableObject {
 
         let savedScale = UserDefaults.standard.double(forKey: Self.scaleKey)
         self.scale = (savedScale >= 0.5 && savedScale <= 2.0) ? savedScale : 1.0
+
+        let savedFont = UserDefaults.standard.double(forKey: Self.bubbleFontKey)
+        self.bubbleFontSize = (savedFont >= 8 && savedFont <= 24) ? savedFont : 11
 
         let actuallyInstalled = ClaudeHookInstaller.isInstalled()
         let lastKnown = UserDefaults.standard.bool(forKey: Self.connectedKey)

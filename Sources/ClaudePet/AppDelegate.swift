@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var cancellables = Set<AnyCancellable>()
     private var autoStartMenuItem: NSMenuItem!
     private var scaleSliderLabel: NSTextField!
+    private var bubbleFontSliderLabel: NSTextField!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         _ = settings  // 触发 lazy 初始化（含 catalog.attach）
@@ -113,6 +114,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 缩放滑块（NSSlider 嵌入 NSMenuItem.view）
         menu.addItem(makeScaleSliderItem())
+        // 气泡字体大小滑块（独立于整体 scale）
+        menu.addItem(makeBubbleFontSliderItem())
 
         menu.addItem(.separator())
         menu.addItem(withTitle: "跑一下！", action: #selector(runPet), keyEquivalent: "g").target = self
@@ -247,6 +250,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func scaleLabelText() -> String {
         "缩放：\(Int((settings.scale * 100).rounded()))%"
+    }
+
+    private func makeBubbleFontSliderItem() -> NSMenuItem {
+        let item = NSMenuItem()
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 220, height: 44))
+
+        let label = NSTextField(labelWithString: bubbleFontLabelText())
+        label.frame = NSRect(x: 14, y: 22, width: 192, height: 16)
+        label.font = NSFont.menuFont(ofSize: 12)
+        label.textColor = .secondaryLabelColor
+        view.addSubview(label)
+        bubbleFontSliderLabel = label
+
+        let slider = NSSlider(value: settings.bubbleFontSize,
+                              minValue: 8,
+                              maxValue: 24,
+                              target: self,
+                              action: #selector(bubbleFontSliderChanged(_:)))
+        slider.frame = NSRect(x: 14, y: 4, width: 192, height: 20)
+        slider.numberOfTickMarks = 9   // 8 / 10 / 12 / 14 / 16 / 18 / 20 / 22 / 24
+        slider.allowsTickMarkValuesOnly = false
+        slider.isContinuous = true
+        view.addSubview(slider)
+
+        item.view = view
+        return item
+    }
+
+    @objc private func bubbleFontSliderChanged(_ sender: NSSlider) {
+        // 1pt 精度
+        let v = sender.doubleValue.rounded()
+        settings.bubbleFontSize = v
+        bubbleFontSliderLabel.stringValue = bubbleFontLabelText()
+    }
+
+    private func bubbleFontLabelText() -> String {
+        "气泡字体：\(Int(settings.bubbleFontSize.rounded()))pt"
     }
 
     private func showInfo(title: String, text: String) {
