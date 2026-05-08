@@ -6,6 +6,7 @@ import Combine
 final class PetWindow: NSPanel {
     private var cancellables = Set<AnyCancellable>()
     private weak var stateMachine: PetStateMachine?
+    private weak var settings: PetSettings?
     private let followController = FollowController()
     private var saveOriginTimer: Timer?
 
@@ -20,6 +21,7 @@ final class PetWindow: NSPanel {
 
     init(stateMachine: PetStateMachine, mouseTracker: MouseTracker, settings: PetSettings) {
         self.stateMachine = stateMachine
+        self.settings = settings
         let initialSize = NSSize(
             width: Self.baseSize.width * CGFloat(settings.scale),
             height: Self.baseSize.height * CGFloat(settings.scale)
@@ -103,12 +105,22 @@ final class PetWindow: NSPanel {
             }
             .store(in: &cancellables)
 
-        // scale 变化 → 调整窗口尺寸（保持中心点不变）
-        settings.$scale
-            .removeDuplicates()
-            .receive(on: RunLoop.main)
-            .sink { [weak self] s in self?.applyScale(s) }
-            .store(in: &cancellables)
+        // 任何会影响窗口尺寸的输入：scale / 气泡内容 / 气泡字号 /
+        // follow 状态（决定是否展示"主人..."文案）/ session 名 → 重算 frame
+        Publishers.CombineLatest4(
+            settings.$scale.removeDuplicates(),
+            settings.$bubbleFontSize.removeDuplicates(),
+            stateMachine.$bubble.removeDuplicates(),
+            stateMachine.$lastCwd.removeDuplicates()
+        )
+        .map { _ in () }
+        .merge(with:
+            settings.$followMode.removeDuplicates().map { _ in () },
+            settings.$isFollowing.removeDuplicates().map { _ in () }
+        )
+        .receive(on: RunLoop.main)
+        .sink { [weak self] in self?.recomputeFrame() }
+        .store(in: &cancellables)
 
         // 还原上次窗口位置（如果上次保存的位置还在某个屏幕里）
         let didRestore = restoreSavedOrigin(size: initialSize)
@@ -187,18 +199,53 @@ final class PetWindow: NSPanel {
         ], forKey: Self.originKey)
     }
 
-    /// 缩放：保持中心不变，改 frame.size。
-    private func applyScale(_ scale: Double) {
-        let new = NSSize(
-            width: Self.baseSize.width * CGFloat(scale),
-            height: Self.baseSize.height * CGFloat(scale)
-        )
+    /// 重算窗口尺寸：保持中心不变。
+    /// - 宽度 = max(baseW × scale, 气泡测量宽度 + padding) —— 气泡比 sprite 宽时
+    ///   窗口跟着扩，避免 NSWindow clip 掉气泡两端。
+    /// - 高度 = baseH × scale —— 字号过大时气泡顶部可能微溢出，但 SwiftUI 在
+    ///   ZStack 里默认不强制 clip 子视图（NSWindow 本身才会硬裁），实际表现可
+    ///   接受；要再扩高度的话会牵动 follow / animateRunPath 的位置语义。
+    private func recomputeFrame() {
+        guard let st = settings else { return }
+        let s = CGFloat(st.scale)
+        let baseW = Self.baseSize.width * s
+        let baseH = Self.baseSize.height * s
+        let bubbleW = currentBubbleWidth()
+        let newW = max(baseW, bubbleW)
+        let newH = baseH
+
         let mid = NSPoint(x: frame.midX, y: frame.midY)
         let target = NSRect(
-            origin: NSPoint(x: mid.x - new.width / 2, y: mid.y - new.height / 2),
-            size: new
+            origin: NSPoint(x: mid.x - newW / 2, y: mid.y - newH / 2),
+            size: NSSize(width: newW, height: newH)
         )
         setFrame(target, display: true)
+    }
+
+    /// 测量当前实际要显示的气泡文本所需宽度（含 padding）。
+    /// 文案规则与 PetView.displayBubble 保持一致。
+    private func currentBubbleWidth() -> CGFloat {
+        guard let st = settings, let sm = stateMachine else { return 0 }
+        let text: String
+        if st.isFollowing && st.followMode == .afterTaskOnce {
+            let name = sm.sessionName
+            text = name.isEmpty
+                ? "主人我都干完了，你快来看"
+                : "\(name) 干完了，你快来看"
+        } else {
+            text = sm.bubble
+        }
+        if text.isEmpty { return 0 }
+
+        let f = CGFloat(st.bubbleFontSize)
+        let font = NSFont.systemFont(ofSize: f, weight: .medium)
+        let attr = NSAttributedString(string: text, attributes: [.font: font])
+        let bbox = attr.boundingRect(
+            with: CGSize(width: 10_000, height: 100),
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        )
+        // BubbleView 的 padding.horizontal = fontSize * 0.9（左右各一份），再留 8pt 余量
+        return ceil(bbox.width + f * 1.8 + 8)
     }
 
     /// 跑一段路：朝左跑到屏幕左边附近，再跑回原位。
