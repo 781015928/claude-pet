@@ -307,7 +307,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showPet() { petWindow.orderFrontRegardless() }
     @objc private func hidePet() { petWindow.orderOut(nil) }
-    @objc private func resetPosition() { petWindow.moveToBottomRight() }
+    @objc private func resetPosition() { petWindow.recallToActiveScreen() }
     @objc private func quit() { NSApp.terminate(nil) }
 
     @objc private func runPet() {

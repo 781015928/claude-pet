@@ -246,6 +246,25 @@ final class PetWindow: NSPanel {
         } ?? NSScreen.main
     }
 
+    /// 强制把桌宠召回到用户当前焦点屏（NSScreen.main = key window 所在屏）的
+    /// 右下角。多显示器场景下，桌宠跑到副屏让用户在主屏的鼠标够不到时，靠
+    /// "菜单 → 重置位置"触发这个方法把它叫回来。
+    /// 跟 moveToBottomRight 的区别：moveToBottomRight 用 currentScreen()（桌宠
+    /// 当前所在屏），桌宠在副屏就回副屏；这个方法主动跳屏。
+    func recallToActiveScreen() {
+        let target = NSScreen.main ?? NSScreen.screens.first
+        guard let screen = target else { return }
+        // 先把窗口瞬移到目标屏中央，让 currentScreen() 重新认屏
+        let mid = NSPoint(
+            x: screen.frame.midX - frame.width / 2,
+            y: screen.frame.midY - frame.height / 2
+        )
+        suppressDragSprite = true
+        setFrameOrigin(mid)
+        // 再走标准回归 → 该屏右下角的 dock-safe 位置
+        moveToBottomRight()
+    }
+
     func moveToBottomRight(animated: Bool = false) {
         guard let target = defaultBottomRightOrigin() else { return }
         suppressDragSprite = true
@@ -282,15 +301,23 @@ final class PetWindow: NSPanel {
     }
 
     @objc private func handleWindowDidMove(_ note: Notification) {
-        // 严格实时安全网：sprite 视觉边界一旦超出"屏内安全区"就立刻拉回 ——
-        // 不再只看"window center 在 visibleFrame 内"，那个条件太松，sprite
-        // 中心勉强卡在边上、sprite 下半身已经掉进 dock / 屏外的情况照样放行。
-        // 现在直接拿 clampedOrigin 跟当前位置比，不一致就 setFrame 修。
+        // 实时安全网：sprite 视觉边界超出"屏内安全区"就拉回。
+        // 但 follow 期间放开 **x 方向** —— 否则桌宠在副屏时 clamp 会把它锁在
+        // 副屏 maxCx 边缘，每步只走 4pt 永远跨不过屏边界，鼠标在主屏就召唤
+        // 不到桌宠（死锁）。y 方向始终严格 clamp，防止 follow 把桌宠扎进 dock。
         // 阈值 0.5pt 防止 setFrameOrigin → didMove → 再次 clamp 的递归。
         let safe = clampedOrigin(frame.origin)
-        if abs(safe.x - frame.origin.x) > 0.5 || abs(safe.y - frame.origin.y) > 0.5 {
-            setFrameOrigin(safe)
-            return
+        let following = settings?.isFollowing == true
+        if following {
+            if abs(safe.y - frame.origin.y) > 0.5 {
+                setFrameOrigin(NSPoint(x: frame.origin.x, y: safe.y))
+                return
+            }
+        } else {
+            if abs(safe.x - frame.origin.x) > 0.5 || abs(safe.y - frame.origin.y) > 0.5 {
+                setFrameOrigin(safe)
+                return
+            }
         }
 
         // debounce 0.5s —— follow 高频 setFrameOrigin 期间不会落盘，停下后才存
