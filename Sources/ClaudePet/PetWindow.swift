@@ -246,14 +246,22 @@ final class PetWindow: NSPanel {
         } ?? NSScreen.main
     }
 
-    /// 强制把桌宠召回到用户当前焦点屏（NSScreen.main = key window 所在屏）的
-    /// 右下角。多显示器场景下，桌宠跑到副屏让用户在主屏的鼠标够不到时，靠
-    /// "菜单 → 重置位置"触发这个方法把它叫回来。
+    /// 强制把桌宠召回到用户当前焦点屏的右下角。
+    ///
+    /// "焦点屏"取**鼠标光标所在屏**，而不是 NSScreen.main：
+    /// - main 的定义是"包含 keyWindow 的屏"，桌宠是 nonactivatingPanel 永远
+    ///   不会是 keyWindow，所以 main 实际取决于最后激活的别的应用的 key
+    ///   window 在哪屏，跟用户当下视线常对不上
+    /// - 鼠标光标永远只在一个屏，是用户当下注意力最准的代理
+    ///
     /// 跟 moveToBottomRight 的区别：moveToBottomRight 用 currentScreen()（桌宠
-    /// 当前所在屏），桌宠在副屏就回副屏；这个方法主动跳屏。
+    /// 当前所在屏），桌宠在副屏就回副屏；这个方法主动跳屏到鼠标屏。
     func recallToActiveScreen() {
-        let target = NSScreen.main ?? NSScreen.screens.first
-        guard let screen = target else { return }
+        let mouseLoc = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first(where: { $0.frame.contains(mouseLoc) })
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+        guard let screen = screen else { return }
         // 先把窗口瞬移到目标屏中央，让 currentScreen() 重新认屏
         let mid = NSPoint(
             x: screen.frame.midX - frame.width / 2,
