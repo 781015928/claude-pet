@@ -135,20 +135,45 @@ final class PetWindow: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
-    /// 默认右下角位置 —— 让 sprite **视觉本体**（baseSize × scale）距屏幕右下角
-    /// 各 24pt。如果窗口因气泡撑得比 sprite 宽，多出来的宽度左右等分摊，使
-    /// sprite 中心始终落在 (maxX - spriteW/2 - 24, minY + 24 + spriteH/2)。
-    /// 这样不论气泡有没有出现 / 多宽，"原地"是同一个视觉位置。
+    /// 默认右下角位置。
+    ///
+    /// 目标矛盾：
+    /// - 想让 sprite **视觉中心**始终落在距屏幕右下角 (spriteW/2 + 24, spriteH/2 + 24) 处
+    /// - 但 sprite 在 PetView ZStack 里是 alignment .center 渲染的（≈ 窗口几何中心）
+    /// - 当气泡撑宽 NSWindow 时，"窗口几何中心" ≠ "屏幕右下角"，二者得选一边
+    ///
+    /// 旧算法只满足第一条 → 窗口右半 / 气泡右端跑出屏幕被裁。
+    /// 新算法：**优先保证窗口完整落在屏幕内**（右下各 24pt margin），sprite 视觉
+    /// 位置在大气泡时会随窗口整体往左让一些，但不会再有"跑出屏幕"。
+    ///
+    /// 多显示器：用桌宠当前所在屏幕，而不是 NSScreen.main
+    /// （桌宠是 nonactivatingPanel，永远不是 keyWindow，main 不一定是它所在屏）。
     func defaultBottomRightOrigin() -> NSPoint? {
-        guard let screen = NSScreen.main else { return nil }
+        guard let screen = currentScreen() else { return nil }
         let v = screen.visibleFrame
         let s = CGFloat(settings?.scale ?? 1.0)
         let spriteW = Self.baseSize.width * s
-        let extraW = max(0, frame.width - spriteW)
-        return NSPoint(
-            x: v.maxX - spriteW - 24 - extraW / 2,
-            y: v.minY + 24
-        )
+        let frameW = frame.width
+        let margin: CGFloat = 24
+
+        // 期望：sprite 视觉中心位于 v.maxX - spriteW/2 - margin
+        // 推回 origin：origin.x = sprite_center - frameW/2
+        let preferred = v.maxX - spriteW / 2 - margin - frameW / 2
+
+        // 但窗口右边不能超出屏幕右减 margin
+        let maxOriginX = v.maxX - frameW - margin
+        let minOriginX = v.minX + margin
+
+        let originX = max(minOriginX, min(preferred, maxOriginX))
+        return NSPoint(x: originX, y: v.minY + margin)
+    }
+
+    /// 桌宠当前所在屏幕 —— 用窗口中心点定屏幕，避免 NSScreen.main 在多显示器下
+    /// 把"用户键盘焦点屏"误当成"桌宠屏"。
+    private func currentScreen() -> NSScreen? {
+        let mid = NSPoint(x: frame.midX, y: frame.midY)
+        return NSScreen.screens.first { $0.frame.contains(mid) }
+            ?? NSScreen.main
     }
 
     func moveToBottomRight(animated: Bool = false) {
