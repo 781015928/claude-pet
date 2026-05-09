@@ -142,15 +142,19 @@ final class PetWindow: NSPanel {
     /// - 但 sprite 在 PetView ZStack 里是 alignment .center 渲染的（≈ 窗口几何中心）
     /// - 当气泡撑宽 NSWindow 时，"窗口几何中心" ≠ "屏幕右下角"，二者得选一边
     ///
-    /// 旧算法只满足第一条 → 窗口右半 / 气泡右端跑出屏幕被裁。
-    /// 新算法：**优先保证窗口完整落在屏幕内**（右下各 24pt margin），sprite 视觉
+    /// 算法：**优先保证窗口完整落在屏幕内**（右下各 24pt margin），sprite 视觉
     /// 位置在大气泡时会随窗口整体往左让一些，但不会再有"跑出屏幕"。
     ///
-    /// 多显示器：用桌宠当前所在屏幕，而不是 NSScreen.main
-    /// （桌宠是 nonactivatingPanel，永远不是 keyWindow，main 不一定是它所在屏）。
+    /// y 方向 dock-safe：visibleFrame.minY 在 dock auto-hide 时只比 frame.minY
+    /// 高一点点（~4pt 触发条），如果直接用 v.minY+24 会被 dock 弹出后盖住。改成
+    /// `max(v.minY+24, f.minY+80)` —— 不论 dock 隐不隐藏、在哪个屏上都看得见。
+    ///
+    /// 多显示器：用桌宠当前所在屏，而不是 NSScreen.main（桌宠是 nonactivatingPanel
+    /// 永远不是 keyWindow，main 不一定是它所在屏）。
     func defaultBottomRightOrigin() -> NSPoint? {
         guard let screen = currentScreen() else { return nil }
         let v = screen.visibleFrame
+        let f = screen.frame
         let s = CGFloat(settings?.scale ?? 1.0)
         let spriteW = Self.baseSize.width * s
         let frameW = frame.width
@@ -163,17 +167,30 @@ final class PetWindow: NSPanel {
         // 但窗口右边不能超出屏幕右减 margin
         let maxOriginX = v.maxX - frameW - margin
         let minOriginX = v.minX + margin
-
         let originX = max(minOriginX, min(preferred, maxOriginX))
-        return NSPoint(x: originX, y: v.minY + margin)
+
+        // dock-safe：起底用 v.minY+24，但 auto-hide / 没 dock 时这个值贴底，
+        // dock 一弹出会盖住桌宠。强制不低于 f.minY+80 保留 dock 弹出空间。
+        let originY = max(v.minY + margin, f.minY + 80)
+
+        return NSPoint(x: originX, y: originY)
     }
 
-    /// 桌宠当前所在屏幕 —— 用窗口中心点定屏幕，避免 NSScreen.main 在多显示器下
-    /// 把"用户键盘焦点屏"误当成"桌宠屏"。
+    /// 桌宠当前所在屏 —— 优先用窗口中心点定屏；如果中心已在所有屏外（被推出屏 /
+    /// 屏拓扑变化等），找几何中心距桌宠中心**最近**的屏，而不是 fallback 到
+    /// NSScreen.main —— main 可能是用户键盘焦点屏，跟桌宠原来在哪完全无关。
     private func currentScreen() -> NSScreen? {
         let mid = NSPoint(x: frame.midX, y: frame.midY)
-        return NSScreen.screens.first { $0.frame.contains(mid) }
-            ?? NSScreen.main
+        if let s = NSScreen.screens.first(where: { $0.frame.contains(mid) }) {
+            return s
+        }
+        return NSScreen.screens.min { a, b in
+            let am = NSPoint(x: a.frame.midX, y: a.frame.midY)
+            let bm = NSPoint(x: b.frame.midX, y: b.frame.midY)
+            let da = pow(am.x - mid.x, 2) + pow(am.y - mid.y, 2)
+            let db = pow(bm.x - mid.x, 2) + pow(bm.y - mid.y, 2)
+            return da < db
+        } ?? NSScreen.main
     }
 
     func moveToBottomRight(animated: Bool = false) {
@@ -193,7 +210,9 @@ final class PetWindow: NSPanel {
         }
     }
 
-    /// 把保存的 origin 套回来，前提是该位置仍在某个可见屏幕里。
+    /// 把保存的 origin 套回来，前提是 sprite **中心**仍在某个屏的 visibleFrame 内。
+    /// 用 contains(center) 而不是 frame.intersects —— 后者哪怕窗口只有 1px 重叠
+    /// 也算"在屏"，结果就是桌宠几乎全在屏外被还原，用户找不见。
     @discardableResult
     private func restoreSavedOrigin(size: NSSize) -> Bool {
         guard
@@ -202,8 +221,8 @@ final class PetWindow: NSPanel {
             let y = dict["y"] as? Double
         else { return false }
         let p = NSPoint(x: x, y: y)
-        let rect = NSRect(origin: p, size: size)
-        let onScreen = NSScreen.screens.contains { $0.visibleFrame.intersects(rect) }
+        let center = NSPoint(x: p.x + size.width / 2, y: p.y + size.height / 2)
+        let onScreen = NSScreen.screens.contains { $0.visibleFrame.contains(center) }
         guard onScreen else { return false }
         setFrameOrigin(p)
         return true
