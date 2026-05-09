@@ -274,6 +274,21 @@ final class PetWindow: NSPanel {
     }
 
     @objc private func handleWindowDidMove(_ note: Notification) {
+        // 实时安全网：window center 完全跑出所有屏 visibleFrame 时，**立刻**
+        // clamp 拉回。允许用户拖到屏边缘部分露头，但拖到完全消失会被弹回 ——
+        // 否则 persistOrigin 是 0.5s debounce + 落盘只影响下次启动，本次会话
+        // 桌宠就在屏外找不见了。
+        let center = NSPoint(x: frame.midX, y: frame.midY)
+        let centerInside = NSScreen.screens.contains { $0.visibleFrame.contains(center) }
+        if !centerInside {
+            let safe = clampedOrigin(frame.origin)
+            // 阈值判断防止 setFrameOrigin → didMove → 再次 clamp 的递归
+            if abs(safe.x - frame.origin.x) > 0.5 || abs(safe.y - frame.origin.y) > 0.5 {
+                setFrameOrigin(safe)
+                return // 重新进 didMove，下次直接走正常分支
+            }
+        }
+
         // debounce 0.5s —— follow 高频 setFrameOrigin 期间不会落盘，停下后才存
         saveOriginTimer?.invalidate()
         saveOriginTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
@@ -364,8 +379,10 @@ final class PetWindow: NSPanel {
 
     /// 跑一段路：朝左跑到屏幕左边附近，再跑回原位。
     /// 总时长 ~6s，分两半。完成后由 stateMachine 自己回 idle。
+    /// 用 currentScreen() 而不是 NSScreen.main —— 桌宠在副屏时 main 是别的屏，
+    /// 否则 leftPoint 算到主屏左边，桌宠会瞬间跨屏跑过去。
     func animateRunPath(duration: TimeInterval = 6) {
-        guard let screen = NSScreen.main else { return }
+        guard let screen = currentScreen() else { return }
         let v = screen.visibleFrame
         let original = self.frame.origin
         let leftPoint = NSPoint(x: v.minX + 40, y: original.y)
