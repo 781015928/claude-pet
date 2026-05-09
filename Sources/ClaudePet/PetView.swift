@@ -90,16 +90,19 @@ struct PetView: View {
     }
 
     /// 单击优先级：
-    /// 1. pending 队列非空 → 弹出队首，跳回**它的** session（不用全局 lastSessionID，
-    ///    避免被并发 hook 污染导致跳到错误 session / 出现 "General coding session"
-    ///    脏 session）。队列还有剩余 → 保持气泡展示下一条。
+    /// 1. pending 队列非空 → 弹出队首 + 把 Claude Desktop 拉到前台。
+    ///    （之前用 `claude --resume <id> /desktop` 走 CLI 直接跳回原 session 的
+    ///     方案放弃了：并发 hook 场景下 sessionID/cwd 难以可靠绑定到正确的
+    ///     session，CLI 路径还会产生 "General coding session" 脏 session，得不
+    ///     偿失。改成单纯激活 Claude Desktop，让用户自己挑要看哪个会话。）
+    ///    队列还有剩余 → 保持气泡展示下一条。
     /// 2. 队列空但 follow 还在 → cancelAndReturn 收尾
     /// 3. 否则 → 随机 oneshot
     private func handleSingleClick() {
         let inFollow = settings.isFollowing && settings.followMode == .afterTaskOnce
 
-        if let head = stateMachine.ackPendingTask() {
-            PetActions.resumeClaudeSession(id: head.sessionID, cwd: head.cwd)
+        if stateMachine.ackPendingTask() != nil {
+            PetActions.launchClaudeDesktop()
             // 队列已清空 → 收回 follow；队列还有 → 留着继续提醒下一个
             if inFollow && stateMachine.currentPending == nil {
                 settings.onCancelFollowRequest?()
