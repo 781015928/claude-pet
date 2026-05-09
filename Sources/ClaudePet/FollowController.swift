@@ -85,7 +85,9 @@ final class FollowController {
             x: window.frame.origin.x + stepX,
             y: window.frame.origin.y + stepY
         )
-        window.setFrameOrigin(target)
+        // 防止鼠标在屏边缘 / 屏外时把桌宠也带出屏看不见 —— sprite 中心强制
+        // 留在屏内安全区（含 dock 余量）
+        window.setFrameOrigin(window.clampedOrigin(target))
     }
 
     /// 用 setFrameOrigin 分步走回默认位置 —— 同 tick 路径，避免 NSAnimationContext 路径不可靠。

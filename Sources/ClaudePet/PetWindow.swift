@@ -170,10 +170,55 @@ final class PetWindow: NSPanel {
         let originX = max(minOriginX, min(preferred, maxOriginX))
 
         // dock-safe：起底用 v.minY+24，但 auto-hide / 没 dock 时这个值贴底，
-        // dock 一弹出会盖住桌宠。强制不低于 f.minY+80 保留 dock 弹出空间。
-        let originY = max(v.minY + margin, f.minY + 80)
+        // dock 一弹出会盖住桌宠。强制不低于 f.minY+120 —— 留出大尺寸 dock + 一点
+        // 视觉余量，让桌宠看起来像"踩在 dock 上方"而不是贴 dock 顶部。
+        let originY = max(v.minY + margin, f.minY + 120)
 
         return NSPoint(x: originX, y: originY)
+    }
+
+    /// 把任意 origin 夹到"sprite 视觉中心仍在屏内安全区"内 —— 用于阻止
+    /// follow tick / 拖拽落盘等路径把桌宠推出屏让用户找不见。
+    ///
+    /// 安全区 = sprite 中心位于 visibleFrame 减 sprite 半身后的内框；y 方向额外
+    /// 不低于 frame.minY+120 保证 dock 弹出也看得见。
+    ///
+    /// 选屏：先看当前 origin 对应的 sprite 中心在哪个屏，没有就找最近屏；这样
+    /// 即使桌宠已经在屏外，clamp 也会把它拉回**最近**那块屏，而不是误跳到 main。
+    func clampedOrigin(_ p: NSPoint) -> NSPoint {
+        let cx = p.x + frame.width / 2
+        let cy = p.y + frame.height / 2
+        let testCenter = NSPoint(x: cx, y: cy)
+
+        let screen = NSScreen.screens.first(where: { $0.frame.contains(testCenter) })
+            ?? NSScreen.screens.min(by: {
+                let am = NSPoint(x: $0.frame.midX, y: $0.frame.midY)
+                let bm = NSPoint(x: $1.frame.midX, y: $1.frame.midY)
+                return pow(am.x - cx, 2) + pow(am.y - cy, 2)
+                     < pow(bm.x - cx, 2) + pow(bm.y - cy, 2)
+            })
+            ?? NSScreen.main
+        guard let screen = screen else { return p }
+
+        let v = screen.visibleFrame
+        let f = screen.frame
+        let s = CGFloat(settings?.scale ?? 1.0)
+        let spriteW = Self.baseSize.width * s
+        let spriteH = Self.baseSize.height * s
+
+        // sprite 视觉中心的合法范围
+        let minCx = v.minX + spriteW / 2
+        let maxCx = v.maxX - spriteW / 2
+        let minCy = max(v.minY + spriteH / 2, f.minY + 120)
+        let maxCy = v.maxY - spriteH / 2
+
+        let clampedCx = max(minCx, min(cx, maxCx))
+        let clampedCy = max(minCy, min(cy, maxCy))
+
+        return NSPoint(
+            x: clampedCx - frame.width / 2,
+            y: clampedCy - frame.height / 2
+        )
     }
 
     /// 桌宠当前所在屏 —— 优先用窗口中心点定屏；如果中心已在所有屏外（被推出屏 /
@@ -250,9 +295,12 @@ final class PetWindow: NSPanel {
     }
 
     private func persistOrigin() {
+        // 落盘前 clamp —— 用户拖到屏外时不强制纠正（保留拖拽自由），但保存的位置
+        // 一定是屏内合法位置，下次启动 restoreSavedOrigin 不会还原一个看不见的地方
+        let safe = clampedOrigin(frame.origin)
         UserDefaults.standard.set([
-            "x": Double(frame.origin.x),
-            "y": Double(frame.origin.y)
+            "x": Double(safe.x),
+            "y": Double(safe.y)
         ], forKey: Self.originKey)
     }
 
