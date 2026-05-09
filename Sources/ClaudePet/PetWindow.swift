@@ -169,10 +169,14 @@ final class PetWindow: NSPanel {
         let minOriginX = v.minX + margin
         let originX = max(minOriginX, min(preferred, maxOriginX))
 
-        // dock-safe：起底用 v.minY+24，但 auto-hide / 没 dock 时这个值贴底，
-        // dock 一弹出会盖住桌宠。强制不低于 f.minY+120 —— 留出大尺寸 dock + 一点
-        // 视觉余量，让桌宠看起来像"踩在 dock 上方"而不是贴 dock 顶部。
-        let originY = max(v.minY + margin, f.minY + 120)
+        // dock-safe，分两种情况：
+        // ① dock 显示在底部 → visibleFrame 已经避开它，sprite 紧贴 dock 上方
+        //   24pt 即可（v.minY + 24，window 不动 sprite 底贴 v.minY 上 24pt）
+        // ② dock auto-hide / 在侧面 / 副屏没 dock → visibleFrame 几乎贴屏底，
+        //   贴底放 sprite 会被 dock 弹出后盖一半；留 100pt 让出弹出空间
+        let dockHidden = (v.minY - f.minY) < 10
+        let bottomGap: CGFloat = dockHidden ? 100 : margin
+        let originY = v.minY + bottomGap
 
         return NSPoint(x: originX, y: originY)
     }
@@ -206,10 +210,14 @@ final class PetWindow: NSPanel {
         let spriteW = Self.baseSize.width * s
         let spriteH = Self.baseSize.height * s
 
-        // sprite 视觉中心的合法范围
+        // sprite 视觉中心的合法范围。底部 dock-aware：dock 显示 → v.minY 已避开；
+        // dock 隐藏（v.minY ≈ f.minY）→ 让出 100pt 给 dock 弹出空间，sprite 底
+        // 不能比 f.minY+100 还低，否则 dock 一弹出 sprite 就被盖一半。
+        let dockHidden = (v.minY - f.minY) < 10
+        let bottomGap: CGFloat = dockHidden ? 100 : 0
         let minCx = v.minX + spriteW / 2
         let maxCx = v.maxX - spriteW / 2
-        let minCy = max(v.minY + spriteH / 2, f.minY + 120)
+        let minCy = max(v.minY, f.minY + bottomGap) + spriteH / 2
         let maxCy = v.maxY - spriteH / 2
 
         let clampedCx = max(minCx, min(cx, maxCx))
@@ -274,19 +282,15 @@ final class PetWindow: NSPanel {
     }
 
     @objc private func handleWindowDidMove(_ note: Notification) {
-        // 实时安全网：window center 完全跑出所有屏 visibleFrame 时，**立刻**
-        // clamp 拉回。允许用户拖到屏边缘部分露头，但拖到完全消失会被弹回 ——
-        // 否则 persistOrigin 是 0.5s debounce + 落盘只影响下次启动，本次会话
-        // 桌宠就在屏外找不见了。
-        let center = NSPoint(x: frame.midX, y: frame.midY)
-        let centerInside = NSScreen.screens.contains { $0.visibleFrame.contains(center) }
-        if !centerInside {
-            let safe = clampedOrigin(frame.origin)
-            // 阈值判断防止 setFrameOrigin → didMove → 再次 clamp 的递归
-            if abs(safe.x - frame.origin.x) > 0.5 || abs(safe.y - frame.origin.y) > 0.5 {
-                setFrameOrigin(safe)
-                return // 重新进 didMove，下次直接走正常分支
-            }
+        // 严格实时安全网：sprite 视觉边界一旦超出"屏内安全区"就立刻拉回 ——
+        // 不再只看"window center 在 visibleFrame 内"，那个条件太松，sprite
+        // 中心勉强卡在边上、sprite 下半身已经掉进 dock / 屏外的情况照样放行。
+        // 现在直接拿 clampedOrigin 跟当前位置比，不一致就 setFrame 修。
+        // 阈值 0.5pt 防止 setFrameOrigin → didMove → 再次 clamp 的递归。
+        let safe = clampedOrigin(frame.origin)
+        if abs(safe.x - frame.origin.x) > 0.5 || abs(safe.y - frame.origin.y) > 0.5 {
+            setFrameOrigin(safe)
+            return
         }
 
         // debounce 0.5s —— follow 高频 setFrameOrigin 期间不会落盘，停下后才存
