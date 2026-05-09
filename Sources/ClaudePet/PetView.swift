@@ -10,16 +10,24 @@ struct PetView: View {
     /// 仅供 ZZZBubbles 等装饰动画使用（sprite 自带时钟，不依赖此 phase）
     @State private var phase: Double = 0
 
-    /// 实际显示的气泡 —— afterTaskOnce 追随期间强制展示"主人我都干完了"文案，
-    /// 不被 stateMachine 内部的 autoReset / 后续状态切换覆盖；单击 ack 后回退到
-    /// stateMachine.bubble。
-    /// 文案里嵌入 session 名（cwd basename），让用户知道是哪个会话来叫他。
+    /// 实际显示的气泡。优先级：
+    /// 1. 待 ack 的 pending 队首 → 用入队时**冻结**的 sessionName + detail，
+    ///    后续别的 hook 不会污染；多任务排队时尾巴上加 "(+N)"
+    /// 2. 否则 → stateMachine.bubble（即时 hook 文案，working/thinking 等）
     private var displayBubble: String {
-        if settings.isFollowing && settings.followMode == .afterTaskOnce {
-            let name = stateMachine.sessionName
-            return name.isEmpty
-                ? "主人我都干完了，你快来看"
-                : "\(name) 干完了，你快来看"
+        if let pending = stateMachine.currentPending {
+            let count = stateMachine.pendingTasks.count
+            let suffix = count > 1 ? " (+\(count - 1))" : ""
+            let name = pending.sessionName
+            switch pending.kind {
+            case .done:
+                let head = name.isEmpty ? "主人我都干完了，你快来看" : "\(name) 干完了，你快来看"
+                return head + suffix
+            case .notification:
+                // permission / generic notification：保留原 detail（含 emoji）
+                return name.isEmpty ? pending.detail + suffix
+                                    : "\(name): \(pending.detail)\(suffix)"
+            }
         }
         return stateMachine.bubble
     }
@@ -82,29 +90,25 @@ struct PetView: View {
     }
 
     /// 单击优先级：
-    /// 1. 任务完成相关场景（.notification / .done / afterTaskOnce 追随中）：
-    ///    ↳ 跳回那个 Claude session（claude --resume <id> /desktop）
-    ///    ↳ 同时 ack 通知 / 取消追随
-    /// 2. 否则 → 随机播放 waving / jumping / review 一个 oneshot
+    /// 1. pending 队列非空 → 弹出队首，跳回**它的** session（不用全局 lastSessionID，
+    ///    避免被并发 hook 污染导致跳到错误 session / 出现 "General coding session"
+    ///    脏 session）。队列还有剩余 → 保持气泡展示下一条。
+    /// 2. 队列空但 follow 还在 → cancelAndReturn 收尾
+    /// 3. 否则 → 随机 oneshot
     private func handleSingleClick() {
         let inFollow = settings.isFollowing && settings.followMode == .afterTaskOnce
-        let isPostTask =
-            stateMachine.state == .notification ||
-            stateMachine.state == .done ||
-            inFollow
 
-        if isPostTask {
-            // 跳回 session
-            if let sid = stateMachine.lastSessionID, !sid.isEmpty {
-                PetActions.resumeClaudeSession(id: sid, cwd: stateMachine.lastCwd)
-            }
-            // 清状态（追随优先于 notification —— follow 时 state 通常 == .done 或 .notification 都需要清）
-            if inFollow {
+        if let head = stateMachine.ackPendingTask() {
+            PetActions.resumeClaudeSession(id: head.sessionID, cwd: head.cwd)
+            // 队列已清空 → 收回 follow；队列还有 → 留着继续提醒下一个
+            if inFollow && stateMachine.currentPending == nil {
                 settings.onCancelFollowRequest?()
             }
-            if stateMachine.state == .notification {
-                stateMachine.acknowledgeNotification()
-            }
+            return
+        }
+
+        if inFollow {
+            settings.onCancelFollowRequest?()
             return
         }
 

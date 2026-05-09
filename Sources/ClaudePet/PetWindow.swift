@@ -105,9 +105,9 @@ final class PetWindow: NSPanel {
             }
             .store(in: &cancellables)
 
-        // 任何会影响窗口尺寸的输入：scale / 气泡字号 / 气泡内容 / session 名 /
-        // follow 状态（影响 displayBubble 文案）—— 任一变化都重算 frame。
-        // 用 MergeMany 让 6 个 Void publisher 类型对齐，比 CombineLatest+merge
+        // 任何会影响窗口尺寸的输入：scale / 气泡字号 / 气泡内容 / pending 队列 /
+        // follow 状态 —— 任一变化都重算 frame。
+        // 用 MergeMany 让所有 Void publisher 类型对齐，比 CombineLatest+merge
         // 更不容易被类型推断坑。
         Publishers.MergeMany([
             settings.$scale.map { _ in () }.eraseToAnyPublisher(),
@@ -115,7 +115,7 @@ final class PetWindow: NSPanel {
             settings.$followMode.map { _ in () }.eraseToAnyPublisher(),
             settings.$isFollowing.map { _ in () }.eraseToAnyPublisher(),
             stateMachine.$bubble.map { _ in () }.eraseToAnyPublisher(),
-            stateMachine.$lastCwd.map { _ in () }.eraseToAnyPublisher(),
+            stateMachine.$pendingTasks.map { _ in () }.eraseToAnyPublisher(),
         ])
         .receive(on: RunLoop.main)
         .sink { [weak self] in self?.recomputeFrame() }
@@ -240,11 +240,16 @@ final class PetWindow: NSPanel {
     private func currentBubbleWidth() -> CGFloat {
         guard let st = settings, let sm = stateMachine else { return 0 }
         let text: String
-        if st.isFollowing && st.followMode == .afterTaskOnce {
-            let name = sm.sessionName
-            text = name.isEmpty
-                ? "主人我都干完了，你快来看"
-                : "\(name) 干完了，你快来看"
+        if let pending = sm.currentPending {
+            let count = sm.pendingTasks.count
+            let suffix = count > 1 ? " (+\(count - 1))" : ""
+            let name = pending.sessionName
+            switch pending.kind {
+            case .done:
+                text = (name.isEmpty ? "主人我都干完了，你快来看" : "\(name) 干完了，你快来看") + suffix
+            case .notification:
+                text = name.isEmpty ? pending.detail + suffix : "\(name): \(pending.detail)\(suffix)"
+            }
         } else {
             text = sm.bubble
         }

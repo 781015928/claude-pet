@@ -25,6 +25,33 @@ struct HookEvent {
     let data: [String: Any]
 }
 
+/// 待用户 ack 的"完成 / 通知"事件，按 (sessionID, kind) 去重。
+/// 多个 session 同时完成时会同时存在多条 —— 单击桌宠按队首先处理。
+///
+/// 关键：sessionID 和 cwd 在入队时**冻结**，后续别的 hook 不会污染 ——
+/// 这是修复"单击跳到错误 session / Claude Desktop 出现 General coding session"
+/// 的根因，之前用全局 lastSessionID 会被任何 hook 覆盖。
+struct PendingTask: Identifiable, Equatable {
+    enum Kind { case done, notification }
+
+    let id: UUID = UUID()
+    let sessionID: String
+    let cwd: String
+    let kind: Kind
+    /// 入队当下要展示的气泡文案（"搞定" / "🛂 Bash: ..." 之类）；后续 hook 不影响它
+    let detail: String
+    let timestamp: Date
+
+    /// session 可读名 = cwd 的最后一段目录名。
+    var sessionName: String {
+        guard !cwd.isEmpty else { return "" }
+        let name = (cwd as NSString).lastPathComponent
+        return name.isEmpty ? cwd : name
+    }
+
+    static func == (lhs: PendingTask, rhs: PendingTask) -> Bool { lhs.id == rhs.id }
+}
+
 final class PetStateMachine: ObservableObject {
     @Published var state: PetState = .idle
     @Published var sleepVariant: SleepVariant = .curl
@@ -34,18 +61,18 @@ final class PetStateMachine: ObservableObject {
     /// 不影响 state 本身（hook 仍然可以推进状态机）。
     @Published var oneshot: SpriteAnimation? = nil
 
-    /// 最近一次 hook 事件附带的 session 上下文，用于：
-    /// 1) 在气泡里把 session 名（cwd basename）显示出来
-    /// 2) 单击桌宠时通过 `claude --resume <id>` 跳回那个会话
+    /// 待用户 ack 的完成 / 通知队列。FIFO，单击桌宠从队首弹出。
+    /// 同 (sessionID, kind) 的二次事件会**更新现有条目**而非入新（避免同一
+    /// session 反复 Stop 导致气泡被无限挤）。
+    @Published var pendingTasks: [PendingTask] = []
+
+    /// 队首 —— 即当前气泡 / 单击 ack 应该处理的那条。
+    var currentPending: PendingTask? { pendingTasks.first }
+
+    /// 最近一次 hook 来源（用于调试 / 顶部贴纸等"当前活跃感"显示），
+    /// **不再用于决定单击跳哪个 session**。session 跳转走 pendingTasks 队列。
     @Published var lastSessionID: String?
     @Published var lastCwd: String?
-
-    /// session 的可读名 = cwd 的最后一段目录名。
-    var sessionName: String {
-        guard let cwd = lastCwd, !cwd.isEmpty else { return "" }
-        let name = (cwd as NSString).lastPathComponent
-        return name.isEmpty ? cwd : name
-    }
 
     private var resetWork: DispatchWorkItem?
     private var sleepWork: DispatchWorkItem?
@@ -85,13 +112,13 @@ final class PetStateMachine: ObservableObject {
     }
 
     private func applyEvent(_ event: HookEvent) {
-        // 任何 hook 都更新 session 上下文（每个 event 都含 session_id / cwd）
-        if let sid = event.data["session_id"] as? String, !sid.isEmpty {
-            lastSessionID = sid
-        }
-        if let cwd = event.data["cwd"] as? String, !cwd.isEmpty {
-            lastCwd = cwd
-        }
+        // 解 session 上下文（每个 hook 都含 session_id / cwd）
+        let sid = (event.data["session_id"] as? String) ?? ""
+        let cwd = (event.data["cwd"] as? String) ?? ""
+
+        // 仅记录"最近活跃 session"用于显示，**不用于 resume 跳转**
+        if !sid.isEmpty { lastSessionID = sid }
+        if !cwd.isEmpty { lastCwd = cwd }
 
         switch event.name {
         case "SessionStart":
@@ -130,17 +157,21 @@ final class PetStateMachine: ObservableObject {
             let tool = (event.data["tool_name"] as? String) ?? "工具"
             let input = (event.data["tool_input"] as? [String: Any]) ?? [:]
             let detail = Self.detailForPermission(tool: tool, input: input)
-            let bubble = detail.isEmpty ? "🛂 \(tool) 等授权" : "🛂 \(detail)"
-            transition(to: .notification, bubble: bubble, autoReset: nil)
+            let detailText = detail.isEmpty ? "🛂 \(tool) 等授权" : "🛂 \(detail)"
+            enqueuePending(sessionID: sid, cwd: cwd, kind: .notification, detail: detailText)
+            transition(to: .notification, bubble: detailText, autoReset: nil)
 
         case "Notification":
             // 持续显示，直到用户单击 ack（详见 PetView.handleSingleClick）
+            enqueuePending(sessionID: sid, cwd: cwd, kind: .notification,
+                           detail: "主人我都干完了，你快来看")
             transition(to: .notification,
                        bubble: "主人我都干完了，你快来看",
                        autoReset: nil)
 
         case "Stop":
-            transition(to: .done, bubble: "搞定！", autoReset: 6)
+            enqueuePending(sessionID: sid, cwd: cwd, kind: .done, detail: "搞定！")
+            transition(to: .done, bubble: "搞定！", autoReset: nil)
 
         case "SubagentStart":
             let agent = (event.data["agent_type"] as? String) ?? "子代理"
@@ -177,15 +208,80 @@ final class PetStateMachine: ObservableObject {
         }
     }
 
-    /// 用户在桌宠上单击 → 确认收到通知，从 .notification 回 idle。
-    /// 仅当当前是 .notification 时生效（其他状态调用是 no-op）。
+    /// 用户在桌宠上单击 → 弹出队首 pending 任务，返回它给调用方做 resume。
+    /// 队列还有剩余 → 保持 .done/.notification 状态展示下一条；
+    /// 队列清空 → 回 .idle 并起 sleep timer。
+    ///
+    /// 必须同步调用 + 同步返回：调用方拿着 (sessionID, cwd) 立即去启动子进程
+    /// resume，所以不能 dispatch.async。
+    @discardableResult
+    func ackPendingTask() -> PendingTask? {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard !pendingTasks.isEmpty else { return nil }
+        let head = pendingTasks.removeFirst()
+
+        if let next = pendingTasks.first {
+            // 还有任务排队 → 把气泡切到下一条；state 保持
+            bubble = next.detail
+            switch next.kind {
+            case .done:         state = .done
+            case .notification: state = .notification
+            }
+        } else {
+            // 队列清空 → 回 idle
+            resetWork?.cancel()
+            if state == .notification || state == .done {
+                state = .idle
+                bubble = ""
+            }
+            scheduleSleep()
+        }
+        return head
+    }
+
+    /// 兼容老调用方：仅当 state == .notification 且队列空时直接 ack。
+    /// 新链路应优先调用 ackPendingTask()。
     func acknowledgeNotification() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self, self.state == .notification else { return }
+            if !self.pendingTasks.isEmpty {
+                _ = self.ackPendingTask()
+                return
+            }
             self.resetWork?.cancel()
             self.state = .idle
             self.bubble = ""
             self.scheduleSleep()
+        }
+    }
+
+    /// 把一条 pending 任务推入队尾。同 (sessionID, kind) 已存在 → 更新现有条目
+    /// 的 detail/timestamp，不入新（防止同一 session 反复 Stop 把队列撑爆）。
+    private func enqueuePending(sessionID: String, cwd: String, kind: PendingTask.Kind, detail: String) {
+        guard !sessionID.isEmpty else {
+            // 没有 session_id 的 hook（理论上不该发生）—— 不入队，但仍走 transition
+            return
+        }
+        if let idx = pendingTasks.firstIndex(where: {
+            $0.sessionID == sessionID && $0.kind == kind
+        }) {
+            // 更新现有条目（保持 id/位置不变，detail 取最新）
+            let old = pendingTasks[idx]
+            pendingTasks[idx] = PendingTask(
+                sessionID: old.sessionID,
+                cwd: cwd.isEmpty ? old.cwd : cwd,
+                kind: old.kind,
+                detail: detail,
+                timestamp: Date()
+            )
+        } else {
+            pendingTasks.append(PendingTask(
+                sessionID: sessionID,
+                cwd: cwd,
+                kind: kind,
+                detail: detail,
+                timestamp: Date()
+            ))
         }
     }
 
