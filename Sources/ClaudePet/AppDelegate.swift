@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var autoStartMenuItem: NSMenuItem!
     private var scaleSliderLabel: NSTextField!
     private var bubbleFontSliderLabel: NSTextField!
+    private var lanSubmenu: NSMenu!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         _ = settings  // 触发 lazy 初始化（含 catalog.attach）
@@ -109,6 +110,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         autoStartMenuItem.state = settings.hookAutoStart ? .on : .off
         autoStartMenuItem.toolTip = "桌宠未运行时，Claude hook 触发会自动把 app 拉起来"
         menu.addItem(autoStartMenuItem)
+
+        // 局域网同步子菜单 —— 内容（IP / token）随网络 / 用户操作变，所以
+        // 用 NSMenuDelegate.menuNeedsUpdate 每次打开前重建
+        lanSubmenu = NSMenu(title: "局域网同步")
+        lanSubmenu.delegate = self
+        rebuildLANSubmenu()
+        let lanItem = NSMenuItem(title: "局域网同步…", action: nil, keyEquivalent: "")
+        lanItem.submenu = lanSubmenu
+        lanItem.toolTip = "让内网其他机器的 Claude Code 把 hook 推到这台 Mac 的桌宠"
+        menu.addItem(lanItem)
 
         menu.addItem(.separator())
 
@@ -305,6 +316,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.runModal()
     }
 
+    // MARK: - 局域网同步菜单
+
+    private func rebuildLANSubmenu() {
+        lanSubmenu.removeAllItems()
+
+        let toggle = NSMenuItem(title: "启用局域网同步",
+                                action: #selector(toggleLANSync),
+                                keyEquivalent: "")
+        toggle.target = self
+        toggle.state = settings.lanSyncEnabled ? .on : .off
+        toggle.toolTip = "关闭时仅接受本机 hook；开启时还接受内网带正确 token 的远程 hook"
+        lanSubmenu.addItem(toggle)
+
+        lanSubmenu.addItem(.separator())
+
+        let ip = PrimaryLANAddress.current()
+        let ipText = ip ?? "(无可用网卡)"
+        let ipItem = NSMenuItem(title: "本机内网地址：\(ipText)",
+                                action: ip != nil ? #selector(copyLANInfo(_:)) : nil,
+                                keyEquivalent: "")
+        ipItem.target = self
+        ipItem.representedObject = ip
+        if ip != nil { ipItem.toolTip = "点击复制 IP" }
+        lanSubmenu.addItem(ipItem)
+
+        let portItem = NSMenuItem(title: "端口：54321",
+                                  action: nil, keyEquivalent: "")
+        portItem.isEnabled = false
+        lanSubmenu.addItem(portItem)
+
+        let token = settings.lanToken
+        let masked = token.count > 18
+            ? String(token.prefix(8)) + "…" + String(token.suffix(4))
+            : token
+        let tokenItem = NSMenuItem(title: "Token：\(masked)",
+                                   action: #selector(copyLANInfo(_:)),
+                                   keyEquivalent: "")
+        tokenItem.target = self
+        tokenItem.representedObject = token
+        tokenItem.toolTip = "完整 token：\(token)\n点击复制完整值"
+        lanSubmenu.addItem(tokenItem)
+
+        lanSubmenu.addItem(.separator())
+
+        let installItem = NSMenuItem(title: "复制远程一键安装命令",
+                                     action: #selector(copyRemoteInstallCommand),
+                                     keyEquivalent: "")
+        installItem.target = self
+        installItem.toolTip = "把命令在远程机器粘贴执行，自动装好 hook（命令含 token）"
+        installItem.isEnabled = (ip != nil)
+        lanSubmenu.addItem(installItem)
+
+        let regenItem = NSMenuItem(title: "重新生成 Token",
+                                   action: #selector(regenerateLANToken),
+                                   keyEquivalent: "")
+        regenItem.target = self
+        regenItem.toolTip = "重置后已部署的远程机器需要重新跑安装命令"
+        lanSubmenu.addItem(regenItem)
+    }
+
+    @objc private func toggleLANSync() {
+        settings.lanSyncEnabled.toggle()
+        rebuildLANSubmenu()
+    }
+
+    @objc private func copyLANInfo(_ sender: NSMenuItem) {
+        let value = (sender.representedObject as? String) ?? sender.title
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(value, forType: .string)
+    }
+
+    @objc private func copyRemoteInstallCommand() {
+        guard let ip = PrimaryLANAddress.current() else {
+            NSSound.beep(); return
+        }
+        let cmd = "curl -fsSL -H 'X-ClaudePet-Token: \(settings.lanToken)' http://\(ip):54321/install | bash"
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(cmd, forType: .string)
+    }
+
+    @objc private func regenerateLANToken() {
+        settings.regenerateLANToken()
+        rebuildLANSubmenu()
+    }
+
     @objc private func showPet() { petWindow.orderFrontRegardless() }
     @objc private func hidePet() { petWindow.orderOut(nil) }
     @objc private func resetPosition() { petWindow.recallToActiveScreen() }
@@ -337,11 +435,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hookServer = HookServer(port: 54321) { [weak self] event in
             self?.stateMachine.handle(event: event)
         }
+        // 让 server 在每个请求时实时拿"LAN 是否允许"和当前 token，避免改设置
+        // 后还得重启 server。HookServer 自己内部 loopback 永远直通；非 loopback
+        // 才会读这两个 provider。
+        hookServer.lanEnabledProvider = { [weak self] in
+            self?.settings.lanSyncEnabled ?? false
+        }
+        hookServer.tokenProvider = { [weak self] in
+            self?.settings.lanToken ?? ""
+        }
         do {
             try hookServer.start()
-            NSLog("[ClaudePet] hook server listening on 127.0.0.1:54321")
+            NSLog("[ClaudePet] hook server bound 0.0.0.0:54321 (LAN gated by settings.lanSyncEnabled)")
         } catch {
             NSLog("[ClaudePet] hook server failed to start: \(error)")
+        }
+    }
+}
+
+// MARK: - NSMenuDelegate
+
+extension AppDelegate: NSMenuDelegate {
+    /// 子菜单打开前重建一次，让 IP / token 显示永远是最新的
+    /// （网络切换 / 用户重置 token 都不必手动 rebuild）。
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === lanSubmenu {
+            rebuildLANSubmenu()
         }
     }
 }

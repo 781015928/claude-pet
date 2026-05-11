@@ -37,16 +37,22 @@ struct PendingTask: Identifiable, Equatable {
     let id: UUID = UUID()
     let sessionID: String
     let cwd: String
+    /// 远程机器的 hostname（远程 forwarder 在 payload 里加进来）；本机 hook
+    /// 为 nil。在气泡里跟 cwd basename 一起拼，让用户能区分多机器同名项目。
+    let hostname: String?
     let kind: Kind
     /// 入队当下要展示的气泡文案（"搞定" / "🛂 Bash: ..." 之类）；后续 hook 不影响它
     let detail: String
     let timestamp: Date
 
-    /// session 可读名 = cwd 的最后一段目录名。
+    /// session 可读名：本机 → `dir`；远程 → `host:dir`。
     var sessionName: String {
-        guard !cwd.isEmpty else { return "" }
-        let name = (cwd as NSString).lastPathComponent
-        return name.isEmpty ? cwd : name
+        let dir = cwd.isEmpty ? "" : (cwd as NSString).lastPathComponent
+        let dirText = dir.isEmpty ? cwd : dir
+        if let host = hostname, !host.isEmpty {
+            return dirText.isEmpty ? host : "\(host):\(dirText)"
+        }
+        return dirText
     }
 
     static func == (lhs: PendingTask, rhs: PendingTask) -> Bool { lhs.id == rhs.id }
@@ -115,6 +121,8 @@ final class PetStateMachine: ObservableObject {
         // 解 session 上下文（每个 hook 都含 session_id / cwd）
         let sid = (event.data["session_id"] as? String) ?? ""
         let cwd = (event.data["cwd"] as? String) ?? ""
+        // 远程 forwarder 在 payload 里自动加 hostname；本机 hook 没有这个字段
+        let host = (event.data["hostname"] as? String).flatMap { $0.isEmpty ? nil : $0 }
 
         // 仅记录"最近活跃 session"用于显示，**不用于 resume 跳转**
         if !sid.isEmpty { lastSessionID = sid }
@@ -158,19 +166,19 @@ final class PetStateMachine: ObservableObject {
             let input = (event.data["tool_input"] as? [String: Any]) ?? [:]
             let detail = Self.detailForPermission(tool: tool, input: input)
             let detailText = detail.isEmpty ? "🛂 \(tool) 等授权" : "🛂 \(detail)"
-            enqueuePending(sessionID: sid, cwd: cwd, kind: .notification, detail: detailText)
+            enqueuePending(sessionID: sid, cwd: cwd, hostname: host, kind: .notification, detail: detailText)
             transition(to: .notification, bubble: detailText, autoReset: nil)
 
         case "Notification":
             // 持续显示，直到用户单击 ack（详见 PetView.handleSingleClick）
-            enqueuePending(sessionID: sid, cwd: cwd, kind: .notification,
+            enqueuePending(sessionID: sid, cwd: cwd, hostname: host, kind: .notification,
                            detail: "主人我都干完了，你快来看")
             transition(to: .notification,
                        bubble: "主人我都干完了，你快来看",
                        autoReset: nil)
 
         case "Stop":
-            enqueuePending(sessionID: sid, cwd: cwd, kind: .done, detail: "搞定！")
+            enqueuePending(sessionID: sid, cwd: cwd, hostname: host, kind: .done, detail: "搞定！")
             transition(to: .done, bubble: "搞定！", autoReset: nil)
 
         case "SubagentStart":
@@ -257,7 +265,7 @@ final class PetStateMachine: ObservableObject {
 
     /// 把一条 pending 任务推入队尾。同 (sessionID, kind) 已存在 → 更新现有条目
     /// 的 detail/timestamp，不入新（防止同一 session 反复 Stop 把队列撑爆）。
-    private func enqueuePending(sessionID: String, cwd: String, kind: PendingTask.Kind, detail: String) {
+    private func enqueuePending(sessionID: String, cwd: String, hostname: String?, kind: PendingTask.Kind, detail: String) {
         guard !sessionID.isEmpty else {
             // 没有 session_id 的 hook（理论上不该发生）—— 不入队，但仍走 transition
             return
@@ -270,6 +278,7 @@ final class PetStateMachine: ObservableObject {
             pendingTasks[idx] = PendingTask(
                 sessionID: old.sessionID,
                 cwd: cwd.isEmpty ? old.cwd : cwd,
+                hostname: hostname ?? old.hostname,
                 kind: old.kind,
                 detail: detail,
                 timestamp: Date()
@@ -278,6 +287,7 @@ final class PetStateMachine: ObservableObject {
             pendingTasks.append(PendingTask(
                 sessionID: sessionID,
                 cwd: cwd,
+                hostname: hostname,
                 kind: kind,
                 detail: detail,
                 timestamp: Date()

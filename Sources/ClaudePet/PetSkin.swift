@@ -149,6 +149,20 @@ final class PetSettings: ObservableObject {
             Self.writeAutoStartMarker(enabled: hookAutoStart)
         }
     }
+    /// 是否允许局域网内其他机器（远程 Claude Code）把 hook event 推过来。
+    /// 关闭时 HookServer 只接受 loopback；开启时非 loopback 必须带正确 token。
+    @Published var lanSyncEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(lanSyncEnabled, forKey: Self.lanSyncKey)
+        }
+    }
+    /// 远程 hook 共享密钥 —— 首次启动生成持久化的 UUID。远程 forwarder 必须
+    /// 把这个值放进 `X-ClaudePet-Token` header 才能通过 HookServer 校验。
+    @Published var lanToken: String {
+        didSet {
+            UserDefaults.standard.set(lanToken, forKey: Self.lanTokenKey)
+        }
+    }
     var onCancelFollowRequest: (() -> Void)?
 
     private static let skinKey       = "ClaudePet.skin.id"
@@ -157,6 +171,8 @@ final class PetSettings: ObservableObject {
     private static let bubbleFontKey = "ClaudePet.bubbleFontSize"
     private static let connectedKey  = "ClaudePet.connectedToClaude"
     private static let autoStartKey  = "ClaudePet.hookAutoStart"
+    private static let lanSyncKey    = "ClaudePet.lanSyncEnabled"
+    private static let lanTokenKey   = "ClaudePet.lanToken"
 
     /// 上次保存的 skin id —— AppDelegate 启动时用来挑选初始 skin。
     static var lastSkinID: String? {
@@ -186,6 +202,23 @@ final class PetSettings: ObservableObject {
         self.hookAutoStart = autoStart
         // marker 文件保持与 UserDefaults 一致
         Self.writeAutoStartMarker(enabled: autoStart)
+
+        self.lanSyncEnabled = UserDefaults.standard.bool(forKey: Self.lanSyncKey)
+        let savedToken = UserDefaults.standard.string(forKey: Self.lanTokenKey)
+        if let t = savedToken, !t.isEmpty {
+            self.lanToken = t
+        } else {
+            // 首次启动生成 token 并立刻持久化
+            let t = UUID().uuidString
+            self.lanToken = t
+            UserDefaults.standard.set(t, forKey: Self.lanTokenKey)
+        }
+    }
+
+    /// 重置 LAN token —— 重新生成 UUID 并持久化。
+    /// 调用后所有远程机器需要重新安装 forward 脚本（用新 token）。
+    func regenerateLANToken() {
+        lanToken = UUID().uuidString
     }
 
     /// hook 脚本通过 ~/.claude-pet/.autostart 文件判断是否在 app 未运行时启动 app。

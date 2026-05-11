@@ -92,11 +92,15 @@ enum ClaudeHookInstaller {
 
     // MARK: - Internals
 
-    /// 用 hookScriptURL 路径作为 marker 识别"我们的"hook 条目。
+    /// 用 hookScriptURL 路径作为 marker 识别"本机"hook 条目。
+    /// 注意排除 "claude-pet-hook-remote" —— 那是 LAN 同步时远程脚本写到自己机器
+    /// 上的另一个 forwarder，跟本机 forwarder 完全独立，不应在 uninstall 时被
+    /// 一起删掉。本机 forwarder 名字始终是 "claude-pet-hook"（无后缀）。
     private static func containsOurHook(_ entry: [String: Any]) -> Bool {
         guard let inner = entry["hooks"] as? [[String: Any]] else { return false }
         return inner.contains { item in
-            (item["command"] as? String)?.contains("claude-pet-hook") == true
+            guard let cmd = item["command"] as? String else { return false }
+            return cmd.contains("claude-pet-hook") && !cmd.contains("claude-pet-hook-remote")
         }
     }
 
