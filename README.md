@@ -13,7 +13,7 @@
 
 ## 系统要求
 
-- macOS 13.0+ (Ventura)
+- macOS 12.0+ (Monterey 及以上)
 - Apple Silicon 或 Intel 都可
 
 ## 安装
