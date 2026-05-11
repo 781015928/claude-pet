@@ -181,6 +181,41 @@ final class PetWindow: NSPanel {
         return NSPoint(x: originX, y: originY)
     }
 
+    /// follow 期间专用的 clamp：x 软（所有屏 visibleFrame 的 x 联合范围内 ——
+    /// 允许跨屏 follow，但不能跑出所有显示器的物理总范围）；y 走严格 clamp
+    /// （防止 sprite 沉进 dock）。
+    ///
+    /// 为什么要单独搞个软 clamp 而不直接用 clampedOrigin：
+    /// clampedOrigin 选屏后用该屏的 visibleFrame.x 卡 sprite 中心，sprite 在
+    /// 屏 maxCx 边缘时新 target.x 还是这屏的中心 → 永远跨不过屏界（multi-screen
+    /// follow 死锁）。x 联合让 sprite 中心可以从一个屏的 maxCx 越过到下一屏的
+    /// minCx，单屏时退化为等价 strict clamp（鼠标到屏边缘也不会跑出屏）。
+    func followSafeOrigin(_ p: NSPoint) -> NSPoint {
+        let strictY = clampedOrigin(p).y
+
+        let s = CGFloat(settings?.scale ?? 1.0)
+        let spriteW = Self.baseSize.width * s
+        let frameW = frame.width
+
+        var minX: CGFloat = .infinity
+        var maxX: CGFloat = -.infinity
+        for screen in NSScreen.screens {
+            minX = min(minX, screen.visibleFrame.minX)
+            maxX = max(maxX, screen.visibleFrame.maxX)
+        }
+        guard minX.isFinite, maxX.isFinite else {
+            return NSPoint(x: p.x, y: strictY)
+        }
+
+        let cx = p.x + frameW / 2
+        let safeMinCx = minX + spriteW / 2
+        let safeMaxCx = maxX - spriteW / 2
+        let clampedCx = max(safeMinCx, min(cx, safeMaxCx))
+        let safeX = clampedCx - frameW / 2
+
+        return NSPoint(x: safeX, y: strictY)
+    }
+
     /// 把任意 origin 夹到"sprite 视觉中心仍在屏内安全区"内 —— 用于阻止
     /// follow tick / 拖拽落盘等路径把桌宠推出屏让用户找不见。
     ///
@@ -309,23 +344,18 @@ final class PetWindow: NSPanel {
     }
 
     @objc private func handleWindowDidMove(_ note: Notification) {
-        // 实时安全网：sprite 视觉边界超出"屏内安全区"就拉回。
-        // 但 follow 期间放开 **x 方向** —— 否则桌宠在副屏时 clamp 会把它锁在
-        // 副屏 maxCx 边缘，每步只走 4pt 永远跨不过屏边界，鼠标在主屏就召唤
-        // 不到桌宠（死锁）。y 方向始终严格 clamp，防止 follow 把桌宠扎进 dock。
+        // 实时安全网：
+        // - follow 期间：用 followSafeOrigin —— x 软 clamp（跨屏 OK，但不能跑出
+        //   所有显示器物理范围）、y 严格 clamp（防沉 dock）。这样鼠标到屏左 /
+        //   右边缘时桌宠不再"被甩出屏"，副屏到主屏的跨屏 follow 也不死锁。
+        // - 非 follow 期间：用 clampedOrigin —— 两轴都严格，sprite 必须完整
+        //   在某个屏的 visibleFrame 内。
         // 阈值 0.5pt 防止 setFrameOrigin → didMove → 再次 clamp 的递归。
-        let safe = clampedOrigin(frame.origin)
         let following = settings?.isFollowing == true
-        if following {
-            if abs(safe.y - frame.origin.y) > 0.5 {
-                setFrameOrigin(NSPoint(x: frame.origin.x, y: safe.y))
-                return
-            }
-        } else {
-            if abs(safe.x - frame.origin.x) > 0.5 || abs(safe.y - frame.origin.y) > 0.5 {
-                setFrameOrigin(safe)
-                return
-            }
+        let safe = following ? followSafeOrigin(frame.origin) : clampedOrigin(frame.origin)
+        if abs(safe.x - frame.origin.x) > 0.5 || abs(safe.y - frame.origin.y) > 0.5 {
+            setFrameOrigin(safe)
+            return
         }
 
         // debounce 0.5s —— follow 高频 setFrameOrigin 期间不会落盘，停下后才存

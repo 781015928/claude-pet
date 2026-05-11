@@ -85,11 +85,11 @@ final class FollowController {
             x: window.frame.origin.x + stepX,
             y: window.frame.origin.y + stepY
         )
-        // y 方向 clamp 防 dock 沉入；x 方向放开 —— 跨屏 follow 必须允许桌宠
-        // 离开当前屏 visibleFrame 才能走到鼠标所在屏。didMove 在 follow 期间
-        // 也对 x 方向放过，所以这里直接交付 target.x 不会被回弹。
-        let safeY = window.clampedOrigin(target).y
-        window.setFrameOrigin(NSPoint(x: target.x, y: safeY))
+        // followSafeOrigin：x 软 clamp 到所有屏 visibleFrame x 联合范围（允许
+        // 跨屏 follow，单屏时即等价于该屏 visibleFrame.x 的严格 clamp），
+        // y 严格 clamp 防 dock 沉入。鼠标到屏边缘 / 屏外触发条时桌宠不会再
+        // 跟着跑出屏。
+        window.setFrameOrigin(window.followSafeOrigin(target))
     }
 
     /// 用 setFrameOrigin 分步走回默认位置 —— 同 tick 路径，避免 NSAnimationContext 路径不可靠。
