@@ -74,25 +74,9 @@ final class PetStateMachine: ObservableObject {
     @Published var lastSessionID: String?
     @Published var lastCwd: String?
 
-    /// 当前"活动中"的 session 集合 —— 每个 hook 携带 session_id：
-    /// - 任何"开始 / 进行中"事件（SessionStart / UserPromptSubmit / PreToolUse /
-    ///   PermissionRequest / Notification / SubagentStart）把 sid 加入
-    /// - "结束"事件（Stop / SessionEnd）把 sid 移除
-    ///
-    /// 用途：判断"是不是所有任务都干完了"。multi-session 场景下用户希望"全部
-    /// 干完才开始追鼠标"，单条 session 完成时只做轻提示气泡，桌宠保持 working。
-    @Published var activeSessionIDs: Set<String> = []
-
-    /// 真正"所有任务都干完了" —— activeSessionIDs 空 + pendingTasks 至少有 1 条
-    /// 待 ack。PetWindow 监听这个标志决定要不要启动 afterTaskOnce follow。
-    var allTasksCompleted: Bool {
-        activeSessionIDs.isEmpty && !pendingTasks.isEmpty
-    }
-
     private var resetWork: DispatchWorkItem?
     private var sleepWork: DispatchWorkItem?
     private var oneshotWork: DispatchWorkItem?
-    private var flashWork: DispatchWorkItem?
 
     /// 多久没事件后进入 sleeping。
     var sleepDelay: TimeInterval = 300
@@ -135,22 +119,6 @@ final class PetStateMachine: ObservableObject {
         // 仅记录"最近活跃 session"用于显示，**不用于 resume 跳转**
         if !sid.isEmpty { lastSessionID = sid }
         if !cwd.isEmpty { lastCwd = cwd }
-
-        // 维护 activeSessionIDs（在 case 分支之前更新，让 Stop 分支看到的是
-        // "本次移除后剩余的 active 数"）。"开始 / 进行中"类 hook 加入，"结束"类
-        // hook 移除。SubagentStart/Stop 不影响 —— subagent 是同一个 session 内
-        // 的子代理，不算独立 session。
-        if !sid.isEmpty {
-            switch event.name {
-            case "SessionStart", "UserPromptSubmit", "PreToolUse",
-                 "PostToolUse", "PermissionRequest", "Notification", "PreCompact":
-                activeSessionIDs.insert(sid)
-            case "Stop", "SessionEnd":
-                activeSessionIDs.remove(sid)
-            default:
-                break
-            }
-        }
 
         switch event.name {
         case "SessionStart":
@@ -202,21 +170,8 @@ final class PetStateMachine: ObservableObject {
                        autoReset: nil)
 
         case "Stop":
-            // 关键改造：只有"全部 session 都干完了"才真正进 .done 并触发后续
-            // 追随；中间任何一个 session 完成时只做轻提示，桌宠保持 working ——
-            // 否则桌宠在还有任务在跑的时候就跑去追鼠标，用户视觉上 "干着干着
-            // 跑屏外去了" 找不见。
-            if activeSessionIDs.isEmpty {
-                // 这是最后一个还没结束的 session 的 Stop，确实全部完成
-                enqueuePending(sessionID: sid, cwd: cwd, kind: .done, detail: "搞定！")
-                transition(to: .done, bubble: "搞定！", autoReset: nil)
-            } else {
-                // 还有其他 session 在跑 → 轻提示，不入队、不动 state（保持
-                // working / thinking 等当前状态），桌宠继续干活
-                let name = (cwd as NSString).lastPathComponent
-                let flash = name.isEmpty ? "✓ 一项完成" : "✓ \(name) 完成"
-                flashBubble(flash, duration: 2.5)
-            }
+            enqueuePending(sessionID: sid, cwd: cwd, kind: .done, detail: "搞定！")
+            transition(to: .done, bubble: "搞定！", autoReset: nil)
 
         case "SubagentStart":
             let agent = (event.data["agent_type"] as? String) ?? "子代理"
@@ -419,28 +374,6 @@ final class PetStateMachine: ObservableObject {
             self.oneshotWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + lifetime, execute: work)
         }
-    }
-
-    /// 短暂气泡：覆盖当前 bubble N 秒，自然过期后**恢复**到当时的 bubble，
-    /// state 不动。
-    ///
-    /// 用途：multi-session 并发完成的"轻提示"—— 别的 session 还在跑时单条
-    /// 完成不该把桌宠拉进 .done / 启动 follow，但用户还是该知道这条结束了，
-    /// 所以做个一闪而过的气泡，桌宠保持 working/thinking 动画继续干活。
-    private func flashBubble(_ text: String, duration: TimeInterval = 2.5) {
-        flashWork?.cancel()
-        let prev = bubble
-        bubble = text
-        let work = DispatchWorkItem { [weak self] in
-            guard let self = self else { return }
-            // 只在没人覆盖过这个 flash 文本时才恢复 —— 否则有别的 hook
-            // 已经设了新 bubble，那就是新内容了，不该回退
-            if self.bubble == text {
-                self.bubble = prev
-            }
-        }
-        flashWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
     }
 
     private func transition(to newState: PetState, bubble: String, autoReset: TimeInterval? = nil) {

@@ -76,39 +76,17 @@ final class PetWindow: NSPanel {
             }
             .store(in: &cancellables)
 
-        // afterTaskOnce 追随的真正触发条件 ——
-        //   state == .done
-        // ∧ activeSessionIDs 空（再没有别的 session 还在跑）
-        // ∧ pendingTasks 非空（有"待 ack 的完成"信号）
-        //
-        // 用 CombineLatest3 合并三个 publisher 实时算 shouldFollow：
-        //   false → true：启动 follow
-        //   true → false：取消 follow（新任务又来了 / 或者 ack 清空了队列）
-        //
-        // 之所以不能光看 state == .done：SubagentStop 也会进 .done 但属于子代理
-        // 收工不是 session 全完；并发场景下某个 session 完成时如果别的 session
-        // 还在跑，桌宠该继续 working，不应该启动 follow 跑去追鼠标——否则用户
-        // 看到"桌宠干着干着跑屏外去了"。
-        Publishers.CombineLatest3(
-            stateMachine.$state,
-            stateMachine.$pendingTasks,
-            stateMachine.$activeSessionIDs
-        )
-        .map { state, pending, active in
-            state == .done && active.isEmpty && !pending.isEmpty
-        }
-        .removeDuplicates()
-        .receive(on: RunLoop.main)
-        .sink { [weak self] shouldFollow in
-            guard let self = self, settings.followMode == .afterTaskOnce else { return }
-            if shouldFollow {
-                self.followController.start(mode: .afterTaskOnce)
-            } else if settings.isFollowing {
-                // 已经在 follow 中但条件不再满足（新任务来了 / 队列清空）→ 收回
-                self.followController.cancelAndReturn()
+        // 任务完成（state == .done）时按 followMode 启动一次性追随
+        stateMachine.$state
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] state in
+                guard let self = self else { return }
+                if state == .done && settings.followMode == .afterTaskOnce {
+                    self.followController.start(mode: .afterTaskOnce)
+                }
             }
-        }
-        .store(in: &cancellables)
+            .store(in: &cancellables)
 
         // followMode 切换时启停永久追随
         settings.$followMode
@@ -201,41 +179,6 @@ final class PetWindow: NSPanel {
         let originY = v.minY + bottomGap
 
         return NSPoint(x: originX, y: originY)
-    }
-
-    /// follow 期间专用的 clamp：x 软（允许跨屏 follow 但不能跑出所有屏物理范围），
-    /// y 严格（永远防止 sprite 沉进 dock）。
-    ///
-    /// 之前 follow 期间纯放开 x 方向有个坑：鼠标到屏边缘 / 屏间隙 / 触发条
-    /// 时桌宠跟着出屏，用户看到"干着干着跑没了"。这里给 x 加一个 _所有屏
-    /// visibleFrame x 联合_ 的硬上下限 —— 跨屏没问题，但跑到所有屏之外就拉回。
-    func followSafeOrigin(_ p: NSPoint) -> NSPoint {
-        // y 走原来的严格 clamp，保留 dock-safe / sprite 半身约束
-        let strictY = clampedOrigin(p).y
-
-        // x 软 clamp：sprite 中心限在 ∪ screens.visibleFrame 的 x 范围内
-        let s = CGFloat(settings?.scale ?? 1.0)
-        let spriteW = Self.baseSize.width * s
-        let frameW = frame.width
-
-        var minX: CGFloat = .infinity
-        var maxX: CGFloat = -.infinity
-        for screen in NSScreen.screens {
-            minX = min(minX, screen.visibleFrame.minX)
-            maxX = max(maxX, screen.visibleFrame.maxX)
-        }
-        // 没有任何屏（不该发生）→ 不动 x
-        guard minX.isFinite, maxX.isFinite else {
-            return NSPoint(x: p.x, y: strictY)
-        }
-
-        let cx = p.x + frameW / 2
-        let safeMinCx = minX + spriteW / 2
-        let safeMaxCx = maxX - spriteW / 2
-        let clampedCx = max(safeMinCx, min(cx, safeMaxCx))
-        let safeX = clampedCx - frameW / 2
-
-        return NSPoint(x: safeX, y: strictY)
     }
 
     /// 把任意 origin 夹到"sprite 视觉中心仍在屏内安全区"内 —— 用于阻止
@@ -367,16 +310,22 @@ final class PetWindow: NSPanel {
 
     @objc private func handleWindowDidMove(_ note: Notification) {
         // 实时安全网：sprite 视觉边界超出"屏内安全区"就拉回。
-        // - follow 期间：用 followSafeOrigin —— x 软 clamp（跨屏 OK 但不能跑出
-        //   所有屏物理范围）、y 严格 clamp（防沉 dock）
-        // - 非 follow 期间：用 clampedOrigin —— 两轴都严格，sprite 必须完整
-        //   在某个屏的 visibleFrame 内
+        // 但 follow 期间放开 **x 方向** —— 否则桌宠在副屏时 clamp 会把它锁在
+        // 副屏 maxCx 边缘，每步只走 4pt 永远跨不过屏边界，鼠标在主屏就召唤
+        // 不到桌宠（死锁）。y 方向始终严格 clamp，防止 follow 把桌宠扎进 dock。
         // 阈值 0.5pt 防止 setFrameOrigin → didMove → 再次 clamp 的递归。
+        let safe = clampedOrigin(frame.origin)
         let following = settings?.isFollowing == true
-        let safe = following ? followSafeOrigin(frame.origin) : clampedOrigin(frame.origin)
-        if abs(safe.x - frame.origin.x) > 0.5 || abs(safe.y - frame.origin.y) > 0.5 {
-            setFrameOrigin(safe)
-            return
+        if following {
+            if abs(safe.y - frame.origin.y) > 0.5 {
+                setFrameOrigin(NSPoint(x: frame.origin.x, y: safe.y))
+                return
+            }
+        } else {
+            if abs(safe.x - frame.origin.x) > 0.5 || abs(safe.y - frame.origin.y) > 0.5 {
+                setFrameOrigin(safe)
+                return
+            }
         }
 
         // debounce 0.5s —— follow 高频 setFrameOrigin 期间不会落盘，停下后才存
